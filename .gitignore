@@ -1,0 +1,12 @@
+# Binaries for programs and plugins
+/notification_bot
+
+# IDE-specific files
+.idea/
+
+# Markdown files (if they are not part of the project's source/docs to be versioned)
+# *.md
+
+# Environment file
+.env
+patches
