@@ -5,7 +5,7 @@ import (
 	"database/sql"
 	"fmt"
 	"teacher_notification_bot/internal/domain/teacher"
-	idb "teacher_notification_bot/internal/infra/database" // Assuming custom errors like ErrTeacherNotFound are here
+	idb "teacher_notification_bot/internal/infra/database"
 )
 
 // Custom application-level errors for admin service
@@ -14,14 +14,16 @@ var ErrTeacherAlreadyExists = fmt.Errorf("teacher with this Telegram ID already 
 var ErrTeacherAlreadyInactive = fmt.Errorf("teacher is already inactive")
 
 type AdminService struct {
-	teacherRepo     teacher.Repository
-	adminTelegramID int64
+	teacherRepo      teacher.Repository
+	adminTelegramID  int64
+	notificationRepo *idb.PostgresNotificationRepository
 }
 
-func NewAdminService(tr teacher.Repository, adminID int64) *AdminService {
+func NewAdminService(tr teacher.Repository, nr *idb.PostgresNotificationRepository, adminID int64) *AdminService {
 	return &AdminService{
-		teacherRepo:     tr,
-		adminTelegramID: adminID,
+		teacherRepo:      tr,
+		notificationRepo: nr,
+		adminTelegramID:  adminID,
 	}
 }
 

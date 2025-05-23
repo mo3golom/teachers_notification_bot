@@ -34,9 +34,11 @@ func main() {
 	// Initialize Repositories
 	teacherRepo := idb.NewPostgresTeacherRepository(db)
 	log.Println("INFO: Teacher repository initialized.")
+	notificationRepo := idb.NewPostgresNotificationRepository(db)
+	log.Println("INFO: Notification repository initialized.")
 
 	// Initialize AdminService
-	adminService := app.NewAdminService(teacherRepo, cfg.AdminTelegramID)
+	adminService := app.NewAdminService(teacherRepo, notificationRepo, cfg.AdminTelegramID)
 	log.Println("INFO: Admin service initialized.")
 
 	// Initialize Telegram Bot
