@@ -17,6 +17,8 @@ type AppConfig struct {
 	ManagerTelegramID int64
 	LogLevel          string
 	Environment       string
+	CronSpec15th      string
+	CronSpecDaily     string // For the daily check for last day of month
 }
 
 // Load reads configuration from environment variables and .env file (if present).
@@ -64,6 +66,15 @@ func Load() (*AppConfig, error) {
 	cfg.Environment = strings.ToLower(os.Getenv("ENVIRONMENT"))
 	if cfg.Environment == "" {
 		cfg.Environment = "development" // Default environment
+	}
+
+	cfg.CronSpec15th = os.Getenv("CRON_SPEC_15TH")
+	if cfg.CronSpec15th == "" {
+		cfg.CronSpec15th = "0 10 15 * *" // Default: 10:00 AM on 15th
+	}
+	cfg.CronSpecDaily = os.Getenv("CRON_SPEC_DAILY_FOR_LAST_DAY_CHECK")
+	if cfg.CronSpecDaily == "" {
+		cfg.CronSpecDaily = "0 10 * * *" // Default: 10:00 AM daily
 	}
 
 	return cfg, nil
