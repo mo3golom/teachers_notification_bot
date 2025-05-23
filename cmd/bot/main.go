@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"fmt"
 	"log"
 	"os"
@@ -19,6 +20,8 @@ import (
 
 func main() {
 	fmt.Println("Teacher Notification Bot starting...")
+
+	ctx := context.Background()
 
 	mainLogger := log.New(os.Stdout, "MAIN: ", log.LstdFlags|log.Lshortfile)
 
@@ -82,6 +85,7 @@ func main() {
 		notificationRepo,
 		telegramClientAdapter, // Pass the adapter
 		notifServiceLogger,
+		cfg.ManagerTelegramID, // Pass ManagerTelegramID
 	)
 	mainLogger.Println("INFO: Notification service initialized.")
 
@@ -97,9 +101,9 @@ func main() {
 	notifScheduler.Start() // Start the cron jobs
 
 	// Register Handlers
-	telegram.RegisterAdminHandlers(bot, adminService, cfg.AdminTelegramID) // Pass configured Admin ID
-	// TODO: Register handlers for teacher responses (callbacks) in a later task
-	mainLogger.Println("INFO: Admin command handlers registered.")
+	telegram.RegisterAdminHandlers(ctx, bot, adminService, cfg.AdminTelegramID) // Pass configured Admin ID
+	telegram.RegisterTeacherResponseHandlers(ctx, bot, notificationService)     // Added
+	mainLogger.Println("INFO: Admin and Teacher Response command handlers registered.")
 
 	mainLogger.Println("INFO: Application setup complete. Bot and Scheduler are starting...")
 

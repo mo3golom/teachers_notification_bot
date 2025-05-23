@@ -14,7 +14,7 @@ import (
 
 // RegisterAdminHandlers registers handlers for admin commands.
 // It requires the bot instance, admin service, and the configured admin Telegram ID.
-func RegisterAdminHandlers(b *telebot.Bot, adminService *app.AdminService, adminTelegramID int64) {
+func RegisterAdminHandlers(ctx context.Context, b *telebot.Bot, adminService *app.AdminService, adminTelegramID int64) {
 	b.Handle("/add_teacher", func(c telebot.Context) error {
 		if c.Sender().ID != adminTelegramID {
 			return c.Send("Ошибка: У вас нет прав для выполнения этой команды.") // Unauthorized
@@ -41,7 +41,7 @@ func RegisterAdminHandlers(b *telebot.Bot, adminService *app.AdminService, admin
 			lastName = args[2]
 		}
 
-		newTeacher, err := adminService.AddTeacher(context.Background(), c.Sender().ID, teacherTelegramID, firstName, lastName)
+		newTeacher, err := adminService.AddTeacher(ctx, c.Sender().ID, teacherTelegramID, firstName, lastName)
 		if err != nil {
 			switch err {
 			case app.ErrAdminNotAuthorized: // This check is technically redundant here due to the initial sender check
@@ -77,7 +77,7 @@ func RegisterAdminHandlers(b *telebot.Bot, adminService *app.AdminService, admin
 			return c.Send("Ошибка: Telegram ID должен быть числом.")
 		}
 
-		removedTeacher, err := adminService.RemoveTeacher(context.Background(), c.Sender().ID, teacherTelegramID)
+		removedTeacher, err := adminService.RemoveTeacher(ctx, c.Sender().ID, teacherTelegramID)
 		if err != nil {
 			switch err {
 			case app.ErrAdminNotAuthorized: // Redundant here
@@ -123,10 +123,10 @@ func RegisterAdminHandlers(b *telebot.Bot, adminService *app.AdminService, admin
 		switch listType {
 		case "active":
 			title = "Активные преподаватели"
-			teachersList, err = adminService.ListActiveTeachers(context.Background(), c.Sender().ID)
+			teachersList, err = adminService.ListActiveTeachers(ctx, c.Sender().ID)
 		case "all":
 			title = "Все преподаватели"
-			teachersList, err = adminService.ListAllTeachers(context.Background(), c.Sender().ID)
+			teachersList, err = adminService.ListAllTeachers(ctx, c.Sender().ID)
 		default:
 			return c.Send("Неверный аргумент. Используйте 'active' или 'all', или оставьте пустым для отображения активных преподавателей.")
 		}
