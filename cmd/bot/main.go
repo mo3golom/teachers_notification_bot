@@ -34,7 +34,7 @@ func main() {
 	if err != nil {
 		mainLogger.Fatalf("FATAL: Could not connect to database: %v", err)
 	}
-	defer db.Close()
+	// defer db.Close() // Explicit close during graceful shutdown
 	mainLogger.Println("INFO: Database connection established successfully.")
 
 	// Initialize Repositories
@@ -47,30 +47,22 @@ func main() {
 	adminService := app.NewAdminService(teacherRepo, notificationRepo, cfg.AdminTelegramID)
 	mainLogger.Println("INFO: Admin service initialized.")
 
-	// Initialize (Mock) NotificationService
-	mockNotifServiceLogger := log.New(os.Stdout, "MOCK_NOTIF_SVC: ", log.LstdFlags|log.Lshortfile)
-	mockNotificationService := app.NewMockNotificationService(mockNotifServiceLogger) // Using the mock
-	mainLogger.Println("INFO: Mock Notification service initialized.")
-
-	// Initialize NotificationScheduler
-	schedulerLogger := log.New(os.Stdout, "SCHEDULER: ", log.LstdFlags|log.Lshortfile)
-	notifScheduler := scheduler.NewNotificationScheduler(
-		mockNotificationService, // Pass the mock service
-		notificationRepo,
-		schedulerLogger,
-		cfg.CronSpec15th,
-		cfg.CronSpecDaily,
-	)
-	notifScheduler.Start() // Start the cron jobs
-
 	// Initialize Telegram Bot
 	pref := telebot.Settings{
 		Token:  cfg.TelegramToken,
 		Poller: &telebot.LongPoller{Timeout: 10 * time.Second},
 		OnError: func(err error, c telebot.Context) { // Global error handler
-			log.Printf("ERROR (telebot): %v", err)
-			if c != nil && c.Sender() != nil && c.Chat() != nil {
-				log.Printf("ERROR (telebot context): Message: %s, Sender: %d, Chat: %d", c.Text(), c.Sender().ID, c.Chat().ID)
+			mainLogger.Printf("ERROR (telebot_global): %v", err)
+			if c != nil {
+				if c.Sender() != nil {
+					mainLogger.Printf("ERROR (telebot_global context): Sender ID: %d", c.Sender().ID)
+				}
+				if c.Chat() != nil {
+					mainLogger.Printf("ERROR (telebot_global context): Chat ID: %d", c.Chat().ID)
+				}
+				if c.Message() != nil {
+					mainLogger.Printf("ERROR (telebot_global context): Message Text: %s", c.Text())
+				}
 			}
 		},
 	}
@@ -79,8 +71,34 @@ func main() {
 		mainLogger.Fatalf("FATAL: Could not create Telegram bot: %v", err)
 	}
 
+	// Create TelebotAdapter
+	telegramClientAdapter := telegram.NewTelebotAdapter(bot)
+	mainLogger.Println("INFO: Telegram client adapter initialized.")
+
+	// Initialize REAL NotificationService
+	notifServiceLogger := log.New(os.Stdout, "NOTIF_SVC: ", log.LstdFlags|log.Lshortfile)
+	notificationService := app.NewNotificationServiceImpl(
+		teacherRepo,
+		notificationRepo,
+		telegramClientAdapter, // Pass the adapter
+		notifServiceLogger,
+	)
+	mainLogger.Println("INFO: Notification service initialized.")
+
+	// Initialize NotificationScheduler
+	schedulerLogger := log.New(os.Stdout, "SCHEDULER: ", log.LstdFlags|log.Lshortfile)
+	notifScheduler := scheduler.NewNotificationScheduler(
+		notificationService, // Pass the REAL service
+		notificationRepo,
+		schedulerLogger,
+		cfg.CronSpec15th,
+		cfg.CronSpecDaily,
+	)
+	notifScheduler.Start() // Start the cron jobs
+
 	// Register Handlers
 	telegram.RegisterAdminHandlers(bot, adminService, cfg.AdminTelegramID) // Pass configured Admin ID
+	// TODO: Register handlers for teacher responses (callbacks) in a later task
 	mainLogger.Println("INFO: Admin command handlers registered.")
 
 	mainLogger.Println("INFO: Application setup complete. Bot and Scheduler are starting...")
@@ -95,6 +113,7 @@ func main() {
 
 	mainLogger.Println("INFO: Shutting down application...")
 	notifScheduler.Stop()
+	db.Close() // Explicitly close DB connection
 	// bot.Stop() // If your bot library has a stop method, call it. Telebot poller stops on its own.
 	// db.Close() is handled by defer
 	mainLogger.Println("INFO: Application shut down gracefully.")
