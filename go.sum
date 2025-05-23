@@ -1,0 +1,12 @@
+github.com/joho/godotenv v1.5.1 h1:H/hPjB7PAxPZAl86ZdkZ0f7jJ2no/gCaNoR2XQ89r+s=
+github.com/joho/godotenv v1.5.1/go.mod h1:HUnVaKmfP39sifgq20Q9GIuO5FfB5MnyoAlqg8r3vNo=
+github.com/lib/pq v1.10.9 h1:tL0r33hL9fPJTH2jQ7Hih2J22F7uUoVSA0cPGj0oQ5E=
+github.com/lib/pq v1.10.9/go.mod h1:O2XA2hYt83p0N32yZq93RzRkXyHnE2K7lV2wPSOMp/g=
+github.com/robfig/cron/v3 v3.0.1 h1:hI29NMJAZl1FFJ3V2Zq+RDOsL2PAHoK2N2sYPC2UVYk=
+github.com/robfig/cron/v3 v3.0.1/go.mod h1:uEYNMF3V22a2Lnk2+L2xYxruwCIKnesyN0EnXQYJp0k=
+github.com/sirupsen/logrus v1.9.3 h1:nMh7DbkH0LCY2EV2mL2dF3hG08mQ4idg22h7TT0F99c=
+github.com/sirupsen/logrus v1.9.3/go.mod h1:tS4YEl63V2yV3Y6bHRrO2kH+7lP2W3qL28qQ20wX9+I=
+golang.org/x/sys v0.8.0 h1:VvC7jES8oH1PCL2g2uLVCY2w0d2RPFh0qJzMfJUi73w=
+golang.org/x/sys v0.8.0/go.mod h1:oPkhp121C0qs9LAeXLipPWpHDOeCCbXhr7EPIE/L33E=
+gopkg.in/tucnak/telebot.v3 v3.2.1 h1:P8j2zYgIYPZqDCRWZ3EFnZKYZGMHFFR2djq7XGgmoHw=
+gopkg.in/tucnak/telebot.v3 v3.2.1/go.mod h1:0qOlpBlY2vgXmIeZAlAhD8XNMoaG6s0YnQh0aNXlPjM= 
