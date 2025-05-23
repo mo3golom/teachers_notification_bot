@@ -94,3 +94,29 @@ func (s *AdminService) RemoveTeacher(ctx context.Context, performingAdminID int6
 
 	return targetTeacher, nil
 }
+
+// ListAllTeachers retrieves all teachers from the repository.
+// It ensures the action is performed by an authorized admin.
+func (s *AdminService) ListAllTeachers(ctx context.Context, performingAdminID int64) ([]*teacher.Teacher, error) {
+	if performingAdminID != s.adminTelegramID {
+		return nil, ErrAdminNotAuthorized
+	}
+	teachers, err := s.teacherRepo.ListAll(ctx)
+	if err != nil {
+		return nil, fmt.Errorf("failed to list all teachers from repository: %w", err)
+	}
+	return teachers, nil
+}
+
+// ListActiveTeachers retrieves only active teachers from the repository.
+// It ensures the action is performed by an authorized admin.
+func (s *AdminService) ListActiveTeachers(ctx context.Context, performingAdminID int64) ([]*teacher.Teacher, error) {
+	if performingAdminID != s.adminTelegramID {
+		return nil, ErrAdminNotAuthorized
+	}
+	activeTeachers, err := s.teacherRepo.ListActive(ctx)
+	if err != nil {
+		return nil, fmt.Errorf("failed to list active teachers from repository: %w", err)
+	}
+	return activeTeachers, nil
+}

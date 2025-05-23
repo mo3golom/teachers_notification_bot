@@ -9,7 +9,7 @@ sequenceDiagram
     DevTeam->>DevTeam: B004: Teacher Domain Entity & Repository (completed)
     DevTeam->>DevTeam: B005: Admin - Add Teacher Functionality (completed)
     DevTeam->>DevTeam: B006: Admin - Remove Teacher Functionality (completed)
-    DevTeam->>DevTeam: B007: Admin - List Teachers Functionality
+    DevTeam->>DevTeam: B007: Admin - List Teachers Functionality (completed)
     DevTeam->>DevTeam: B008: NotificationCycle & TeacherReportStatus Domain & Repos
     DevTeam->>DevTeam: B009: Core Notification Scheduler Setup
     DevTeam->>DevTeam: B010: Initial Notification Sending Logic (First Question)

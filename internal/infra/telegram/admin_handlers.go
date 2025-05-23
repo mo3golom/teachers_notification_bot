@@ -5,7 +5,8 @@ import (
 	"fmt"
 	"strconv"
 	"strings"
-	"teacher_notification_bot/internal/app" // Your app service package
+	"teacher_notification_bot/internal/app"
+	teacher "teacher_notification_bot/internal/domain/teacher"
 	idb "teacher_notification_bot/internal/infra/database"
 
 	"gopkg.in/telebot.v3"
@@ -102,5 +103,65 @@ func RegisterAdminHandlers(b *telebot.Bot, adminService *app.AdminService, admin
 		}
 		successMsg := fmt.Sprintf("Преподаватель %s (ID: %d) успешно удален (деактивирован).", teacherName.String(), removedTeacher.TelegramID)
 		return c.Send(successMsg)
+	})
+
+	b.Handle("/list_teachers", func(c telebot.Context) error {
+		if c.Sender().ID != adminTelegramID {
+			return c.Send("Ошибка: У вас нет прав для выполнения этой команды.")
+		}
+
+		args := c.Args()
+		listType := "active" // Default to active
+		if len(args) > 0 {
+			listType = strings.ToLower(args[0])
+		}
+
+		var teachersList []*teacher.Teacher
+		var err error
+		var title string
+
+		switch listType {
+		case "active":
+			title = "Активные преподаватели"
+			teachersList, err = adminService.ListActiveTeachers(context.Background(), c.Sender().ID)
+		case "all":
+			title = "Все преподаватели"
+			teachersList, err = adminService.ListAllTeachers(context.Background(), c.Sender().ID)
+		default:
+			return c.Send("Неверный аргумент. Используйте 'active' или 'all', или оставьте пустым для отображения активных преподавателей.")
+		}
+
+		if err != nil {
+			if err == app.ErrAdminNotAuthorized { // Should be caught by the initial check, but good for defense
+				return c.Send("Ошибка: У вас нет прав для выполнения этой команды.")
+			}
+			c.Bot().OnError(err, c) // Log full error
+			return c.Send(fmt.Sprintf("Произошла ошибка при получении списка преподавателей: %s", err.Error()))
+		}
+
+		if len(teachersList) == 0 {
+			if listType == "active" {
+				return c.Send("Активных преподавателей не найдено.")
+			}
+			return c.Send("Список преподавателей пуст.")
+		}
+
+		var response strings.Builder
+		response.WriteString(fmt.Sprintf("--- %s ---", title))
+		for _, t := range teachersList {
+			status := "Активен"
+			if !t.IsActive {
+				status = "Неактивен"
+			}
+			lastNameStr := ""
+			if t.LastName.Valid {
+				lastNameStr = " " + t.LastName.String
+			}
+			response.WriteString(fmt.Sprintf("ID: %d, TelegramID: %d, Имя: %s%s, Статус: %s\n",
+				t.ID, t.TelegramID, t.FirstName, lastNameStr, status))
+		}
+		// For very long lists, Telegram might truncate. Consider splitting messages or pagination for >4096 chars.
+		// For V1, we send as one message.
+		return c.Send(response.String(), &telebot.SendOptions{ParseMode: telebot.ModeDefault}) // ModeDefault to ensure no markdown issues with names
 	})
 }
