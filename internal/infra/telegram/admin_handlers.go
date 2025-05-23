@@ -6,6 +6,7 @@ import (
 	"strconv"
 	"strings"
 	"teacher_notification_bot/internal/app" // Your app service package
+	idb "teacher_notification_bot/internal/infra/database"
 
 	"gopkg.in/telebot.v3"
 )
@@ -56,6 +57,50 @@ func RegisterAdminHandlers(b *telebot.Bot, adminService *app.AdminService, admin
 		if newTeacher.LastName.Valid {
 			successMsg = fmt.Sprintf("Преподаватель %s %s (ID: %d) успешно добавлен.", newTeacher.FirstName, newTeacher.LastName.String, newTeacher.TelegramID)
 		}
+		return c.Send(successMsg)
+	})
+
+	b.Handle("/remove_teacher", func(c telebot.Context) error {
+		if c.Sender().ID != adminTelegramID {
+			return c.Send("Ошибка: У вас нет прав для выполнения этой команды.") // Unauthorized
+		}
+
+		args := c.Args() // c.Args() returns []string
+		// Expected format: /remove_teacher <TelegramID>
+		if len(args) != 1 {
+			return c.Send("Неверный формат команды. Используйте: /remove_teacher <TelegramID>")
+		}
+
+		teacherTelegramID, err := strconv.ParseInt(args[0], 10, 64)
+		if err != nil {
+			return c.Send("Ошибка: Telegram ID должен быть числом.")
+		}
+
+		removedTeacher, err := adminService.RemoveTeacher(context.Background(), c.Sender().ID, teacherTelegramID)
+		if err != nil {
+			switch err {
+			case app.ErrAdminNotAuthorized: // Redundant here
+				return c.Send("Ошибка: У вас нет прав для выполнения этой команды.")
+			case idb.ErrTeacherNotFound:
+				return c.Send(fmt.Sprintf("Преподаватель с таким Telegram ID %d не найден.", teacherTelegramID))
+			case app.ErrTeacherAlreadyInactive:
+				if removedTeacher != nil {
+					return c.Send(fmt.Sprintf("Преподаватель %s %s (ID: %d) уже был деактивирован.", removedTeacher.FirstName, removedTeacher.LastName.String, removedTeacher.TelegramID))
+				}
+				return c.Send(fmt.Sprintf("Преподаватель с Telegram ID %d уже был деактивирован.", teacherTelegramID))
+			default:
+				c.Bot().OnError(err, c) // Log the full error
+				return c.Send(fmt.Sprintf("Произошла ошибка при удалении преподавателя: %s", err.Error()))
+			}
+		}
+
+		var teacherName strings.Builder
+		teacherName.WriteString(removedTeacher.FirstName)
+		if removedTeacher.LastName.Valid && removedTeacher.LastName.String != "" {
+			teacherName.WriteString(" ")
+			teacherName.WriteString(removedTeacher.LastName.String)
+		}
+		successMsg := fmt.Sprintf("Преподаватель %s (ID: %d) успешно удален (деактивирован).", teacherName.String(), removedTeacher.TelegramID)
 		return c.Send(successMsg)
 	})
 }

@@ -7,8 +7,8 @@ sequenceDiagram
     DevTeam->>DevTeam: B002: Configuration Module Implementation (completed)
     DevTeam->>DevTeam: B003: DB Schema & Initial Migration Setup (completed)
     DevTeam->>DevTeam: B004: Teacher Domain Entity & Repository (completed)
-    DevTeam->>DevTeam: B005: Admin - Add Teacher Functionality
-    DevTeam->>DevTeam: B006: Admin - Remove Teacher Functionality
+    DevTeam->>DevTeam: B005: Admin - Add Teacher Functionality (completed)
+    DevTeam->>DevTeam: B006: Admin - Remove Teacher Functionality (completed)
     DevTeam->>DevTeam: B007: Admin - List Teachers Functionality
     DevTeam->>DevTeam: B008: NotificationCycle & TeacherReportStatus Domain & Repos
     DevTeam->>DevTeam: B009: Core Notification Scheduler Setup

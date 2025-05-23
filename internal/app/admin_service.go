@@ -11,6 +11,7 @@ import (
 // Custom application-level errors for admin service
 var ErrAdminNotAuthorized = fmt.Errorf("performing user is not authorized as an admin")
 var ErrTeacherAlreadyExists = fmt.Errorf("teacher with this Telegram ID already exists")
+var ErrTeacherAlreadyInactive = fmt.Errorf("teacher is already inactive")
 
 type AdminService struct {
 	teacherRepo     teacher.Repository
@@ -62,4 +63,34 @@ func (s *AdminService) AddTeacher(ctx context.Context, performingAdminID int64, 
 	}
 
 	return newTeacher, nil
+}
+
+// RemoveTeacher handles the business logic for deactivating a teacher.
+func (s *AdminService) RemoveTeacher(ctx context.Context, performingAdminID int64, teacherTelegramIDToRemove int64) (*teacher.Teacher, error) {
+	if performingAdminID != s.adminTelegramID {
+		return nil, ErrAdminNotAuthorized
+	}
+
+	// Fetch the teacher by Telegram ID
+	targetTeacher, err := s.teacherRepo.GetByTelegramID(ctx, teacherTelegramIDToRemove)
+	if err != nil {
+		if err == idb.ErrTeacherNotFound { // idb is alias for internal/infra/database
+			return nil, idb.ErrTeacherNotFound // Propagate specific error
+		}
+		return nil, fmt.Errorf("failed to get teacher by Telegram ID for removal: %w", err)
+	}
+
+	// Check if already inactive
+	if !targetTeacher.IsActive {
+		return targetTeacher, ErrTeacherAlreadyInactive
+	}
+
+	// Deactivate the teacher
+	targetTeacher.IsActive = false
+	err = s.teacherRepo.Update(ctx, targetTeacher)
+	if err != nil {
+		return nil, fmt.Errorf("failed to update teacher to inactive in repository: %w", err)
+	}
+
+	return targetTeacher, nil
 }
