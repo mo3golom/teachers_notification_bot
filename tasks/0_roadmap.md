@@ -3,10 +3,10 @@ sequenceDiagram
     autonumber
 
     activate DevTeam
-    DevTeam->>DevTeam: B001: Project Setup & Dockerization
-    DevTeam->>DevTeam: B002: Configuration Module Implementation
-    DevTeam->>DevTeam: B003: DB Schema & Initial Migration Setup
-    DevTeam->>DevTeam: B004: Teacher Domain Entity & Repository
+    DevTeam->>DevTeam: B001: Project Setup & Dockerization (completed)
+    DevTeam->>DevTeam: B002: Configuration Module Implementation (completed)
+    DevTeam->>DevTeam: B003: DB Schema & Initial Migration Setup (completed)
+    DevTeam->>DevTeam: B004: Teacher Domain Entity & Repository (completed)
     DevTeam->>DevTeam: B005: Admin - Add Teacher Functionality
     DevTeam->>DevTeam: B006: Admin - Remove Teacher Functionality
     DevTeam->>DevTeam: B007: Admin - List Teachers Functionality
