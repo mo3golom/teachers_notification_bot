@@ -5,13 +5,13 @@ import (
 	"context"
 	"database/sql"
 	"fmt"
-	"log"
 	"teacher_notification_bot/internal/domain/notification" // Adjust import path
 	"teacher_notification_bot/internal/domain/teacher"
 	domainTelegram "teacher_notification_bot/internal/domain/telegram" // Import from domain
 	idb "teacher_notification_bot/internal/infra/database"             // Alias for your DB errors
 	"time"
 
+	"github.com/sirupsen/logrus"
 	"gopkg.in/telebot.v3" // For telebot.ReplyMarkup and telebot.SendOptions
 )
 
@@ -33,7 +33,7 @@ type NotificationServiceImpl struct {
 	teacherRepo       teacher.Repository
 	notifRepo         notification.Repository
 	telegramClient    domainTelegram.Client // Use the interface from the domain package
-	logger            *log.Logger
+	log               *logrus.Entry
 	managerTelegramID int64 // Added
 }
 
@@ -41,61 +41,66 @@ func NewNotificationServiceImpl(
 	tr teacher.Repository,
 	nr notification.Repository,
 	tc domainTelegram.Client, // Use the interface from the domain package
-	logger *log.Logger,
+	baseLogger *logrus.Entry,
 	managerID int64, // Added
 ) *NotificationServiceImpl {
 	return &NotificationServiceImpl{
 		teacherRepo:       tr,
 		notifRepo:         nr,
 		telegramClient:    tc,
-		logger:            logger,
+		log:               baseLogger,
 		managerTelegramID: managerID, // Added
 	}
 }
 
 // InitiateNotificationProcess starts the notification workflow.
 func (s *NotificationServiceImpl) InitiateNotificationProcess(ctx context.Context, cycleType notification.CycleType, cycleDate time.Time) error {
-	s.logger.Printf("INFO: Initiating notification process for CycleType: %s, Date: %s", cycleType, cycleDate.Format("2006-01-02"))
+	logCtx := s.log.WithFields(logrus.Fields{
+		"operation":  "InitiateNotificationProcess",
+		"cycle_type": cycleType,
+		"cycle_date": cycleDate.Format("2006-01-02"),
+	})
+	logCtx.Info("Initiating notification process")
 
 	// 1. Find or Create NotificationCycle
 	currentCycle, err := s.notifRepo.GetCycleByDateAndType(ctx, cycleDate, cycleType)
 	if err != nil {
 		if err == idb.ErrCycleNotFound {
-			s.logger.Printf("INFO: No existing cycle for %s on %s. Creating new cycle.", cycleType, cycleDate.Format("2006-01-02"))
+			logCtx.Info("No existing cycle found. Creating new cycle.")
 			newCycle := &notification.Cycle{ // Create as a pointer
 				CycleDate: cycleDate,
 				Type:      cycleType,
 			}
 			if err := s.notifRepo.CreateCycle(ctx, newCycle); err != nil {
-				s.logger.Printf("ERROR: Failed to create notification cycle: %v", err)
+				logCtx.WithError(err).Error("Failed to create notification cycle")
 				return fmt.Errorf("failed to create notification cycle: %w", err)
 			}
 			currentCycle = newCycle // Assign the pointer
-			s.logger.Printf("INFO: New notification cycle created with ID: %d", currentCycle.ID)
+			logCtx.WithField("cycle_id", currentCycle.ID).Info("New notification cycle created")
 		} else {
-			s.logger.Printf("ERROR: Failed to get notification cycle: %v", err)
+			logCtx.WithError(err).Error("Failed to get notification cycle")
 			return fmt.Errorf("failed to get notification cycle: %w", err)
 		}
 	} else {
-		s.logger.Printf("INFO: Using existing notification cycle ID: %d for %s on %s", currentCycle.ID, cycleType, cycleDate.Format("2006-01-02"))
+		logCtx.WithField("cycle_id", currentCycle.ID).Info("Existing cycle found.")
 	}
 
 	// 2. Fetch Active Teachers
 	activeTeachers, err := s.teacherRepo.ListActive(ctx)
 	if err != nil {
-		s.logger.Printf("ERROR: Failed to list active teachers: %v", err)
+		logCtx.WithError(err).Error("Failed to list active teachers")
 		return fmt.Errorf("failed to list active teachers: %w", err)
 	}
 	if len(activeTeachers) == 0 {
-		s.logger.Println("INFO: No active teachers found. Notification process will not send any messages.")
+		logCtx.Info("No active teachers found. Notification process will not send any messages.")
 		return nil
 	}
-	s.logger.Printf("INFO: Found %d active teachers.", len(activeTeachers))
+	logCtx.WithField("active_teachers_count", len(activeTeachers)).Info("Found active teachers.")
 
 	// 3. Determine Reports for the Cycle
 	reportsForCycle := determineReportsForCycle(cycleType)
 	if len(reportsForCycle) == 0 {
-		s.logger.Printf("WARN: No reports defined for cycle type: %s", cycleType)
+		logCtx.Warn("No reports defined for cycle type")
 		return nil
 	}
 
@@ -107,11 +112,11 @@ func (s *NotificationServiceImpl) InitiateNotificationProcess(ctx context.Contex
 			// Check if status already exists for this teacher, cycle, reportKey (idempotency)
 			_, err := s.notifRepo.GetReportStatus(ctx, t.ID, currentCycle.ID, reportKey)
 			if err == nil {
-				s.logger.Printf("INFO: Report status for TeacherID %d, CycleID %d, ReportKey %s already exists. Skipping creation.", t.ID, currentCycle.ID, reportKey)
+				logCtx.WithFields(logrus.Fields{"teacher_id": t.ID, "cycle_id": currentCycle.ID, "report_key": reportKey}).Info("Report status already exists. Skipping creation.")
 				continue // Skip if already exists
 			}
 			if err != idb.ErrReportStatusNotFound {
-				s.logger.Printf("ERROR: Failed to check existing report status for TeacherID %d, CycleID %d, ReportKey %s: %v", t.ID, currentCycle.ID, reportKey, err)
+				logCtx.WithError(err).WithFields(logrus.Fields{"teacher_id": t.ID, "cycle_id": currentCycle.ID, "report_key": reportKey}).Error("Failed to check existing report status")
 				// Decide whether to continue with other statuses or return an error for the whole batch
 				continue // For now, log and continue
 			}
@@ -129,25 +134,25 @@ func (s *NotificationServiceImpl) InitiateNotificationProcess(ctx context.Contex
 
 	if len(statusesToCreate) > 0 {
 		if err := s.notifRepo.BulkCreateReportStatuses(ctx, statusesToCreate); err != nil {
-			s.logger.Printf("ERROR: Failed to bulk create teacher report statuses: %v", err)
+			logCtx.WithError(err).Error("Failed to bulk create teacher report statuses")
 			// Depending on error, might need to decide if partial success is okay or rollback
 			// For now, we log and proceed to send for successfully created/existing statuses.
 		} else {
-			s.logger.Printf("INFO: Successfully created/verified %d teacher report statuses.", len(statusesToCreate))
+			logCtx.WithField("count", len(statusesToCreate)).Info("Successfully created/verified teacher report statuses.")
 		}
 	}
 
 	// 5. Send First Notification (Table 1)
 	firstReportKey := notification.ReportKeyTable1Lessons // Always start with Table 1
 	for _, t := range activeTeachers {
+		teacherLogCtx := logCtx.WithFields(logrus.Fields{"teacher_id": t.ID, "teacher_tg_id": t.TelegramID, "report_key": firstReportKey})
 		reportStatus, err := s.notifRepo.GetReportStatus(ctx, t.ID, currentCycle.ID, firstReportKey)
 		if err != nil {
-			s.logger.Printf("ERROR: Could not fetch report status for TeacherID %d, ReportKey %s for sending initial notification: %v", t.ID, firstReportKey, err)
+			teacherLogCtx.WithError(err).Error("Could not fetch report status for sending initial notification")
 			continue // Skip this teacher if their initial status record is missing
 		}
-
 		if reportStatus.Status != notification.StatusPendingQuestion {
-			s.logger.Printf("INFO: Initial notification for TeacherID %d, ReportKey %s skipped, status is %s.", t.ID, firstReportKey, reportStatus.Status)
+			teacherLogCtx.WithField("status", reportStatus.Status).Info("Initial notification skipped, status is not PENDING_QUESTION.")
 			continue
 		}
 
@@ -161,12 +166,12 @@ func (s *NotificationServiceImpl) InitiateNotificationProcess(ctx context.Contex
 
 		err = s.telegramClient.SendMessage(t.TelegramID, messageText, &telebot.SendOptions{ReplyMarkup: replyMarkup, ParseMode: telebot.ModeDefault})
 		if err != nil {
-			s.logger.Printf("ERROR: Failed to send initial notification for Table 1 to Teacher %s (TG_ID: %d): %v", teacherName, t.TelegramID, err)
+			teacherLogCtx.WithError(err).Errorf("Failed to send initial notification for Table 1 to Teacher %s", teacherName)
 		} else {
-			s.logger.Printf("INFO: Successfully sent initial notification for Table 1 to Teacher %s (TG_ID: %d)", teacherName, t.TelegramID)
+			teacherLogCtx.Infof("Successfully sent initial notification for Table 1 to Teacher %s", teacherName)
 			reportStatus.LastNotifiedAt = sql.NullTime{Time: now, Valid: true} // Use the 'now' from the beginning of status processing for this batch
 			if errUpdate := s.notifRepo.UpdateReportStatus(ctx, reportStatus); errUpdate != nil {
-				s.logger.Printf("ERROR: Failed to update LastNotifiedAt for TeacherID %d, ReportStatusID %d: %v", t.ID, reportStatus.ID, errUpdate)
+				teacherLogCtx.WithError(errUpdate).WithField("report_status_id", reportStatus.ID).Error("Failed to update LastNotifiedAt")
 			}
 		}
 	}
@@ -192,22 +197,27 @@ func determineReportsForCycle(cycleType notification.CycleType) []notification.R
 }
 
 func (s *NotificationServiceImpl) ProcessTeacherYesResponse(ctx context.Context, reportStatusID int64) error {
-	s.logger.Printf("INFO: Processing 'Yes' response for ReportStatusID: %d", reportStatusID)
+	logCtx := s.log.WithFields(logrus.Fields{
+		"operation":        "ProcessTeacherYesResponse",
+		"report_status_id": reportStatusID,
+	})
+	logCtx.Info("Processing 'Yes' response")
 
 	// 1a. Fetch TeacherReportStatus
 	currentReportStatus, err := s.notifRepo.GetReportStatusByID(ctx, reportStatusID)
 	if err != nil {
 		if err == idb.ErrReportStatusNotFound {
-			s.logger.Printf("WARN: ReportStatusID %d not found. Possibly a stale callback.", reportStatusID)
+			logCtx.Warn("ReportStatusID not found. Possibly a stale callback.")
 			return nil // Acknowledge callback, but nothing to process
 		}
-		s.logger.Printf("ERROR: Failed to get report status by ID %d: %v", reportStatusID, err)
+		logCtx.WithError(err).Error("Failed to get report status by ID")
 		return fmt.Errorf("failed to get report status by ID %d: %w", reportStatusID, err)
 	}
+	logCtx = logCtx.WithFields(logrus.Fields{"teacher_id": currentReportStatus.TeacherID, "cycle_id": currentReportStatus.CycleID, "report_key": currentReportStatus.ReportKey})
 
 	// If already answered 'Yes', to prevent reprocessing (e.g. double clicks)
 	if currentReportStatus.Status == notification.StatusAnsweredYes {
-		s.logger.Printf("INFO: ReportStatusID %d already marked as ANSWERED_YES. No action needed.", reportStatusID)
+		logCtx.Info("ReportStatusID already marked as ANSWERED_YES. No action needed.")
 		return nil
 	}
 
@@ -215,50 +225,52 @@ func (s *NotificationServiceImpl) ProcessTeacherYesResponse(ctx context.Context,
 	currentReportStatus.Status = notification.StatusAnsweredYes
 	currentReportStatus.UpdatedAt = time.Now() // Service layer can set this before repo call
 	if err := s.notifRepo.UpdateReportStatus(ctx, currentReportStatus); err != nil {
-		s.logger.Printf("ERROR: Failed to update report status ID %d to ANSWERED_YES: %v", reportStatusID, err)
-		return fmt.Errorf("failed to update report status ID %d: %w", reportStatusID, err)
+		logCtx.WithError(err).Error("Failed to update report status to ANSWERED_YES")
+		return fmt.Errorf("failed to update report status ID %d to ANSWERED_YES: %w", reportStatusID, err)
 	}
-	s.logger.Printf("INFO: ReportStatusID %d updated to ANSWERED_YES.", reportStatusID)
+	logCtx.Info("ReportStatusID updated to ANSWERED_YES.")
 
 	// 1c. Fetch Teacher and Cycle details
 	teacherInfo, err := s.teacherRepo.GetByID(ctx, currentReportStatus.TeacherID)
 	if err != nil {
-		s.logger.Printf("ERROR: Failed to get teacher details for TeacherID %d: %v", currentReportStatus.TeacherID, err)
+		logCtx.WithError(err).Error("Failed to get teacher details")
 		return fmt.Errorf("failed to get teacher %d: %w", currentReportStatus.TeacherID, err)
 	}
 
 	currentCycle, err := s.notifRepo.GetCycleByID(ctx, currentReportStatus.CycleID)
 	if err != nil {
-		s.logger.Printf("ERROR: Failed to get cycle details for CycleID %d: %v", currentReportStatus.CycleID, err)
+		logCtx.WithError(err).Error("Failed to get cycle details")
 		return fmt.Errorf("failed to get cycle %d: %w", currentReportStatus.CycleID, err)
 	}
+	logCtx = logCtx.WithField("cycle_type", currentCycle.Type)
 
 	// 1d. Determine Next Action
 	allExpectedReportsForCycle := determineReportsForCycle(currentCycle.Type)
 
 	allConfirmed, err := s.notifRepo.AreAllReportsConfirmedForTeacher(ctx, teacherInfo.ID, currentCycle.ID, allExpectedReportsForCycle)
 	if err != nil {
-		s.logger.Printf("ERROR: Failed to check if all reports confirmed for TeacherID %d, CycleID %d: %v", teacherInfo.ID, currentCycle.ID, err)
+		logCtx.WithError(err).Error("Failed to check if all reports confirmed for teacher")
 		return fmt.Errorf("failed to check all reports confirmed for teacher %d, cycle %d: %w", teacherInfo.ID, currentCycle.ID, err)
 	}
 
 	if allConfirmed {
-		s.logger.Printf("INFO: All reports confirmed for TeacherID %d in CycleID %d.", teacherInfo.ID, currentCycle.ID)
+		logCtx.Info("All reports confirmed for teacher in this cycle.")
 		return s.sendManagerConfirmationAndTeacherFinalReply(ctx, teacherInfo, currentCycle)
 	} else {
 		// Determine next report to ask
 		nextReportKey, err := s.determineNextReportKey(ctx, teacherInfo.ID, currentCycle.ID, currentReportStatus.ReportKey, allExpectedReportsForCycle)
 		if err != nil {
-			s.logger.Printf("ERROR: Could not determine next report key for TeacherID %d, CycleID %d: %v", teacherInfo.ID, currentCycle.ID, err)
+			logCtx.WithError(err).Error("Could not determine next report key")
 			return err
 		}
 
-		if nextReportKey == "" { // Should be caught by allConfirmed, but as a safeguard
-			s.logger.Printf("WARN: All reports appeared confirmed, but determineNextReportKey found no next key for TeacherID %d, CycleID %d. Finalizing.", teacherInfo.ID, currentCycle.ID)
+		// Should not happen if allConfirmed is false, but as a safeguard
+		if nextReportKey == "" {
+			logCtx.Warn("All reports appeared confirmed, but determineNextReportKey found no next key. Finalizing.")
 			return s.sendManagerConfirmationAndTeacherFinalReply(ctx, teacherInfo, currentCycle)
 		}
 
-		s.logger.Printf("INFO: Next report for TeacherID %d in CycleID %d is %s.", teacherInfo.ID, currentCycle.ID, nextReportKey)
+		logCtx.WithField("next_report_key", nextReportKey).Info("Determined next report to ask.")
 		return s.sendSpecificReportQuestion(ctx, teacherInfo, currentCycle.ID, nextReportKey)
 	}
 }
@@ -266,30 +278,44 @@ func (s *NotificationServiceImpl) ProcessTeacherYesResponse(ctx context.Context,
 // determineNextReportKey finds the next report in sequence that isn't 'ANSWERED_YES'.
 // currentAnsweredKey is passed for context but the simpler logic iterates all keys.
 func (s *NotificationServiceImpl) determineNextReportKey(ctx context.Context, teacherID int64, cycleID int32, _ notification.ReportKey, allCycleKeys []notification.ReportKey) (notification.ReportKey, error) {
+	logCtx := s.log.WithFields(logrus.Fields{"operation": "determineNextReportKey", "teacher_id": teacherID, "cycle_id": cycleID})
 	for _, key := range allCycleKeys {
 		reportStatus, err := s.notifRepo.GetReportStatus(ctx, teacherID, cycleID, key)
 		if err != nil {
 			if err == idb.ErrReportStatusNotFound {
-				s.logger.Printf("WARN: Report status for TeacherID %d, CycleID %d, Key %s not found. This might be an issue or an uninitialized report. Treating as PENDING.", teacherID, cycleID, key)
-				// This implies the record should have been created in InitiateNotificationProcess.
 				// If it's missing, it's effectively pending.
 				return key, nil
 			}
+			logCtx.WithError(err).WithField("report_key", key).Error("Error fetching status for key")
 			return "", fmt.Errorf("error fetching status for key %s: %w", key, err)
 		}
 		if reportStatus.Status != notification.StatusAnsweredYes {
-			return key, nil // This is the next key to ask
+			return key, nil
 		}
 	}
-	return "", nil // All keys are StatusAnsweredYes or list is exhausted
+	return "", nil // All confirmed
 }
 
 // sendSpecificReportQuestion sends a question for a given report key.
 func (s *NotificationServiceImpl) sendSpecificReportQuestion(ctx context.Context, teacherInfo *teacher.Teacher, cycleID int32, reportKey notification.ReportKey) error {
+	logCtx := s.log.WithFields(logrus.Fields{
+		"operation":     "sendSpecificReportQuestion",
+		"teacher_id":    teacherInfo.ID,
+		"teacher_tg_id": teacherInfo.TelegramID,
+		"cycle_id":      cycleID,
+		"report_key":    reportKey,
+	})
 	reportStatus, err := s.notifRepo.GetReportStatus(ctx, teacherInfo.ID, cycleID, reportKey)
 	if err != nil {
-		s.logger.Printf("ERROR: Could not fetch report status for TeacherID %d, ReportKey %s for sending specific question: %v", teacherInfo.ID, reportKey, err)
+		logCtx.WithError(err).Error("Could not fetch report status for sending specific question")
 		return fmt.Errorf("failed to fetch status for %s: %w", reportKey, err)
+	}
+
+	// Ensure the status is PendingQuestion before sending
+	if reportStatus.Status != notification.StatusPendingQuestion {
+		logCtx.WithField("status", reportStatus.Status).Warn("Attempted to send question for status not PENDING_QUESTION")
+		// Maybe update status here if it's something unexpected, but for now, just log and return.
+		return fmt.Errorf("cannot send question for status %s", reportStatus.Status)
 	}
 
 	var questionText string
@@ -301,7 +327,7 @@ func (s *NotificationServiceImpl) sendSpecificReportQuestion(ctx context.Context
 	case notification.ReportKeyTable2OTV:
 		questionText = "Супер! Заполнена ли Таблица 2: Таблица ОТВ (все проведенные уроки за всё время)?"
 	default:
-		s.logger.Printf("ERROR: Unknown report key %s for TeacherID %d", reportKey, teacherInfo.ID)
+		logCtx.Error("Unknown report key")
 		return fmt.Errorf("unknown report key: %s", reportKey)
 	}
 
@@ -314,170 +340,193 @@ func (s *NotificationServiceImpl) sendSpecificReportQuestion(ctx context.Context
 
 	err = s.telegramClient.SendMessage(teacherInfo.TelegramID, fullMessage, &telebot.SendOptions{ReplyMarkup: replyMarkup})
 	if err != nil {
-		s.logger.Printf("ERROR: Failed to send question for %s to Teacher %s (TG_ID: %d): %v", reportKey, teacherInfo.FirstName, teacherInfo.TelegramID, err)
+		logCtx.WithError(err).Errorf("Failed to send question for %s to Teacher %s", reportKey, teacherInfo.FirstName)
 		return fmt.Errorf("failed to send question for %s: %w", reportKey, err)
 	}
-	s.logger.Printf("INFO: Successfully sent question for %s to Teacher %s (TG_ID: %d)", reportKey, teacherInfo.FirstName, teacherInfo.TelegramID)
+	logCtx.Infof("Successfully sent question for %s to Teacher %s", reportKey, teacherInfo.FirstName)
 
 	reportStatus.LastNotifiedAt = sql.NullTime{Time: time.Now(), Valid: true}
 	reportStatus.Status = notification.StatusPendingQuestion // Ensure it's marked as pending
 	if errUpdate := s.notifRepo.UpdateReportStatus(ctx, reportStatus); errUpdate != nil {
-		s.logger.Printf("ERROR: Failed to update LastNotifiedAt/Status for ReportStatusID %d after sending question: %v", reportStatus.ID, errUpdate)
+		logCtx.WithError(errUpdate).WithField("report_status_id", reportStatus.ID).Error("Failed to update LastNotifiedAt/Status after sending question")
 	}
 	return nil
 }
 
 // sendManagerConfirmationAndTeacherFinalReply handles the final messages.
 func (s *NotificationServiceImpl) sendManagerConfirmationAndTeacherFinalReply(ctx context.Context, teacherInfo *teacher.Teacher, cycleInfo *notification.Cycle) error {
+	logCtx := s.log.WithFields(logrus.Fields{
+		"operation":     "sendManagerConfirmationAndTeacherFinalReply",
+		"teacher_id":    teacherInfo.ID,
+		"teacher_tg_id": teacherInfo.TelegramID,
+		"cycle_id":      cycleInfo.ID,
+	})
 	if s.managerTelegramID != 0 {
+		managerLogCtx := logCtx.WithField("manager_tg_id", s.managerTelegramID)
 		teacherFullName := teacherInfo.FirstName
 		if teacherInfo.LastName.Valid {
 			teacherFullName += " " + teacherInfo.LastName.String
 		}
-		managerMessage := fmt.Sprintf("Преподаватель %s подтвердил заполнение всех таблиц. Можно выплачивать ЗП.", teacherFullName)
+		managerMessage := fmt.Sprintf("Преподаватель %s подтвердил(а) все таблицы для цикла %s (%s).", teacherFullName, cycleInfo.Type, cycleInfo.CycleDate.Format("2006-01-02"))
 
 		err := s.telegramClient.SendMessage(s.managerTelegramID, managerMessage, nil)
 		if err != nil {
-			s.logger.Printf("ERROR: Failed to send confirmation to manager (ID: %d) for teacher %s: %v", s.managerTelegramID, teacherFullName, err)
+			managerLogCtx.WithError(err).Errorf("Failed to send confirmation to manager for teacher %s", teacherFullName)
 		} else {
-			s.logger.Printf("INFO: Confirmation sent to manager (ID: %d) for teacher %s.", s.managerTelegramID, teacherFullName)
+			managerLogCtx.Infof("Confirmation sent to manager for teacher %s.", teacherFullName)
 		}
 	} else {
-		s.logger.Printf("WARN: Manager Telegram ID not configured in NotificationService. Cannot send manager confirmation.")
+		logCtx.Warn("Manager Telegram ID not configured. Cannot send manager confirmation.")
 	}
 
 	teacherReplyMessage := "Спасибо! Все таблицы подтверждены."
 	err := s.telegramClient.SendMessage(teacherInfo.TelegramID, teacherReplyMessage, nil)
 	if err != nil {
-		s.logger.Printf("ERROR: Failed to send final confirmation to teacher %s (TG_ID: %d): %v", teacherInfo.FirstName, teacherInfo.TelegramID, err)
+		logCtx.WithError(err).Errorf("Failed to send final confirmation to teacher %s", teacherInfo.FirstName)
 		return fmt.Errorf("failed to send final reply to teacher: %w", err)
 	}
-	s.logger.Printf("INFO: Final confirmation sent to teacher %s (TG_ID: %d).", teacherInfo.FirstName, teacherInfo.TelegramID)
+	logCtx.Infof("Final confirmation sent to teacher %s.", teacherInfo.FirstName)
 	return nil
 }
 
 func (s *NotificationServiceImpl) ProcessTeacherNoResponse(ctx context.Context, reportStatusID int64) error {
-	s.logger.Printf("INFO: Processing 'No' response for ReportStatusID: %d", reportStatusID)
+	logCtx := s.log.WithFields(logrus.Fields{
+		"operation":        "ProcessTeacherNoResponse",
+		"report_status_id": reportStatusID,
+	})
+	logCtx.Info("Processing 'No' response")
 
 	// 1a. Fetch TeacherReportStatus
 	currentReportStatus, err := s.notifRepo.GetReportStatusByID(ctx, reportStatusID)
 	if err != nil {
 		if err == idb.ErrReportStatusNotFound {
-			s.logger.Printf("WARN: ReportStatusID %d not found processing 'No' response. Possibly a stale callback.", reportStatusID)
+			logCtx.Warn("ReportStatusID not found processing 'No' response. Possibly a stale callback.")
 			return nil // Acknowledge callback, but nothing to process
 		}
-		s.logger.Printf("ERROR: Failed to get report status by ID %d: %v", reportStatusID, err)
+		logCtx.WithError(err).Error("Failed to get report status by ID")
 		return fmt.Errorf("failed to get report status by ID %d: %w", reportStatusID, err)
 	}
+	logCtx = logCtx.WithFields(logrus.Fields{"teacher_id": currentReportStatus.TeacherID, "cycle_id": currentReportStatus.CycleID, "report_key": currentReportStatus.ReportKey})
 
 	// If already awaiting reminder (e.g. from a previous 'No' click), prevent reprocessing.
 	if currentReportStatus.Status == notification.StatusAwaitingReminder1H {
-		s.logger.Printf("INFO: ReportStatusID %d already in AWAITING_REMINDER_1H. Ignoring duplicate 'No' response.", reportStatusID)
+		logCtx.Info("ReportStatusID already in AWAITING_REMINDER_1H. Ignoring duplicate 'No' response.")
 		return nil
 	}
 
 	// Fetch Teacher details for sending confirmation message
 	teacherInfo, err := s.teacherRepo.GetByID(ctx, currentReportStatus.TeacherID)
 	if err != nil {
-		s.logger.Printf("ERROR: Failed to get teacher details for TeacherID %d: %v", currentReportStatus.TeacherID, err)
+		logCtx.WithError(err).Error("Failed to get teacher details")
 		return fmt.Errorf("failed to get teacher %d: %w", currentReportStatus.TeacherID, err)
 	}
 
-	// Update Status to AwaitingReminder1H and set RemindAt
+	// Calculate reminder time (1 hour from now)
+	reminderTime := time.Now().Add(1 * time.Hour)
+
+	// 1b. Update Status and set reminder time
 	currentReportStatus.Status = notification.StatusAwaitingReminder1H
-	currentReportStatus.RemindAt = sql.NullTime{Time: time.Now().Add(1 * time.Hour), Valid: true}
-	currentReportStatus.ResponseAttempts++ // Increment attempts as "No" is a form of non-completion.
+	currentReportStatus.RemindAt = sql.NullTime{Time: reminderTime, Valid: true}
 	currentReportStatus.UpdatedAt = time.Now()
 
 	if err := s.notifRepo.UpdateReportStatus(ctx, currentReportStatus); err != nil {
-		s.logger.Printf("ERROR: Failed to update report status ID %d to AWAITING_REMINDER_1H: %v", reportStatusID, err)
+		logCtx.WithError(err).Error("Failed to update report status to AWAITING_REMINDER_1H")
 		// Attempt to inform teacher of the error
 		_ = s.telegramClient.SendMessage(teacherInfo.TelegramID, "Произошла ошибка при обработке вашего ответа. Пожалуйста, попробуйте позже или свяжитесь с администратором.", nil)
 		return fmt.Errorf("failed to update report status ID %d to AWAITING_REMINDER_1H: %w", reportStatusID, err)
 	}
-	s.logger.Printf("INFO: ReportStatusID %d updated to AWAITING_REMINDER_1H. Reminder set for %s.", reportStatusID, currentReportStatus.RemindAt.Time.Format(time.RFC3339))
+	logCtx.WithField("remind_at", currentReportStatus.RemindAt.Time.Format(time.RFC3339)).Info("ReportStatusID updated to AWAITING_REMINDER_1H.")
 
 	// Send confirmation message to teacher
 	teacherMessage := "Понял(а). Напомню через час. Если заполните таблицу раньше, это сообщение можно будет проигнорировать."
 	err = s.telegramClient.SendMessage(teacherInfo.TelegramID, teacherMessage, nil)
 	if err != nil {
-		s.logger.Printf("ERROR: Failed to send 'No' response confirmation to teacher %s (TG_ID: %d): %v", teacherInfo.FirstName, teacherInfo.TelegramID, err)
+		logCtx.WithError(err).WithField("teacher_tg_id", teacherInfo.TelegramID).Errorf("Failed to send 'No' response confirmation to teacher %s", teacherInfo.FirstName)
 		// Log error but do not return an error for the main operation, as status update was successful.
 	}
 
 	// A "No" response means the current report is not done. Do not proceed to the next question.
-	// The flow will be handled by ProcessScheduled1HourReminders.
 	return nil
 }
 
 func (s *NotificationServiceImpl) ProcessScheduled1HourReminders(ctx context.Context) error {
-	s.logger.Println("INFO: Processing scheduled 1-hour reminders...")
+	logCtx := s.log.WithField("operation", "ProcessScheduled1HourReminders")
+	logCtx.Info("Processing scheduled 1-hour reminders...")
 	now := time.Now()
 
 	dueStatuses, err := s.notifRepo.ListDueReminders(ctx, notification.StatusAwaitingReminder1H, now)
 	if err != nil {
-		s.logger.Printf("ERROR: Failed to list due 1-hour reminders: %v", err)
+		logCtx.WithError(err).Error("Failed to list due 1-hour reminders")
 		return fmt.Errorf("failed to list due 1-hour reminders: %w", err)
 	}
 
 	if len(dueStatuses) == 0 {
-		s.logger.Println("INFO: No 1-hour reminders due at this time.")
+		logCtx.Info("No 1-hour reminders due at this time.")
 		return nil
 	}
-	s.logger.Printf("INFO: Found %d status(es) needing a 1-hour reminder.", len(dueStatuses))
+	logCtx.WithField("due_statuses_count", len(dueStatuses)).Info("Found status(es) needing a 1-hour reminder.")
 
 	for _, rs := range dueStatuses {
-		s.logger.Printf("INFO: Processing 1-hour reminder for ReportStatusID: %d (TeacherID: %d, ReportKey: %s)", rs.ID, rs.TeacherID, rs.ReportKey)
+		reminderLogCtx := logCtx.WithFields(logrus.Fields{
+			"report_status_id": rs.ID,
+			"teacher_id":       rs.TeacherID,
+			"cycle_id":         rs.CycleID,
+			"report_key":       rs.ReportKey,
+		})
+		reminderLogCtx.Info("Processing 1-hour reminder")
 
 		teacherInfo, err := s.teacherRepo.GetByID(ctx, rs.TeacherID)
 		if err != nil {
-			s.logger.Printf("ERROR: Failed to get teacher (ID %d) for 1-hour reminder: %v", rs.TeacherID, err)
+			reminderLogCtx.WithError(err).Error("Failed to get teacher for 1-hour reminder")
 			continue // Skip this reminder
 		}
 
 		// Re-send the specific question. This function also updates LastNotifiedAt and sets status to StatusPendingQuestion.
 		err = s.sendSpecificReportQuestion(ctx, teacherInfo, rs.CycleID, rs.ReportKey)
 		if err != nil {
-			s.logger.Printf("ERROR: Failed to send 1-hour reminder (re-ask question) for ReportStatusID %d: %v", rs.ID, err)
+			reminderLogCtx.WithError(err).Error("Failed to send 1-hour reminder (re-ask question)")
 			// If sendSpecificReportQuestion fails, the status in DB should still be AWAITING_REMINDER_1H
 			// and RemindAt should still be set, so it will be picked up next time.
 			continue
 		}
 
-		// If sendSpecificReportQuestion was successful, it already updated the status to PENDING_QUESTION and LastNotifiedAt.
-		// We now need to clear RemindAt for this status.
+		// After successfully sending the reminder, clear the RemindAt timestamp
 		// Fetch the latest status again as sendSpecificReportQuestion modified it.
 		updatedRs, fetchErr := s.notifRepo.GetReportStatusByID(ctx, rs.ID)
 		if fetchErr != nil {
-			s.logger.Printf("ERROR: Failed to re-fetch ReportStatusID %d after sending 1-hour reminder: %v. RemindAt might not be cleared.", rs.ID, fetchErr)
+			reminderLogCtx.WithError(fetchErr).Error("Failed to re-fetch ReportStatusID after sending 1-hour reminder. RemindAt might not be cleared.")
 			continue
 		}
 
-		updatedRs.RemindAt = sql.NullTime{Valid: false} // Clear reminder time
+		updatedRs.RemindAt = sql.NullTime{Valid: false} // Clear the reminder time
 		// The status is already PENDING_QUESTION due to sendSpecificReportQuestion.
 		// We are just ensuring RemindAt is cleared.
 		if errUpdate := s.notifRepo.UpdateReportStatus(ctx, updatedRs); errUpdate != nil {
-			s.logger.Printf("ERROR: Failed to update ReportStatusID %d to clear RemindAt after 1-hour reminder: %v", updatedRs.ID, errUpdate)
+			reminderLogCtx.WithError(errUpdate).Error("Failed to update ReportStatusID to clear RemindAt after 1-hour reminder")
 		} else {
-			s.logger.Printf("INFO: Successfully sent 1-hour reminder and updated status for ReportStatusID: %d. Status is now %s, RemindAt cleared.", updatedRs.ID, updatedRs.Status)
+			reminderLogCtx.WithField("new_status", updatedRs.Status).Info("Successfully sent 1-hour reminder and updated status. RemindAt cleared.")
 		}
 	}
 	return nil
 }
 
 func (s *NotificationServiceImpl) ProcessNextDayReminders(ctx context.Context) error {
-	s.logger.Println("INFO: Processing scheduled next-day reminders...")
+	logCtx := s.log.WithField("operation", "ProcessNextDayReminders")
+	logCtx.Info("Processing scheduled next-day reminders...")
 
 	now := time.Now()
 	// Define "previous day" range precisely, considering server's local timezone for consistency with cron.
 	// Location should match the cron job's location.
 	loc := time.Local // Or a specific configured timezone
 	year, month, day := now.Date()
-	startOfToday := time.Date(year, month, day, 0, 0, 0, 0, loc)
-	endOfPreviousDay := startOfToday.Add(-1 * time.Nanosecond) // Yesterday 23:59:59.999...
-	startOfPreviousDay := startOfToday.AddDate(0, 0, -1)       // Yesterday 00:00:00
+	startOfToday := time.Date(year, month, day, 0, 0, 0, 0, loc) // Today 00:00:00
+	endOfPreviousDay := startOfToday.Add(-1 * time.Nanosecond)   // Yesterday 23:59:59.999...
+	startOfPreviousDay := startOfToday.AddDate(0, 0, -1)         // Yesterday 00:00:00
 
-	s.logger.Printf("INFO: Checking for stalled statuses between %s and %s", startOfPreviousDay.Format(time.RFC3339), endOfPreviousDay.Format(time.RFC3339))
+	logCtx.WithFields(logrus.Fields{
+		"check_range_start": startOfPreviousDay.Format(time.RFC3339),
+		"check_range_end":   endOfPreviousDay.Format(time.RFC3339),
+	}).Info("Checking for stalled statuses from previous day")
 
 	statusesToConsider := []notification.InteractionStatus{
 		notification.StatusPendingQuestion,
@@ -486,42 +535,47 @@ func (s *NotificationServiceImpl) ProcessNextDayReminders(ctx context.Context) e
 
 	stalledStatuses, err := s.notifRepo.ListStalledStatusesFromPreviousDay(ctx, statusesToConsider, startOfPreviousDay, endOfPreviousDay)
 	if err != nil {
-		s.logger.Printf("ERROR: Failed to list stalled statuses for next-day reminder: %v", err)
+		logCtx.WithError(err).Error("Failed to list stalled statuses for next-day reminder")
 		return fmt.Errorf("failed to list stalled statuses: %w", err)
 	}
 
 	if len(stalledStatuses) == 0 {
-		s.logger.Println("INFO: No statuses found needing a next-day reminder.")
+		logCtx.Info("No statuses found needing a next-day reminder.")
 		return nil
 	}
-	s.logger.Printf("INFO: Found %d status(es) needing a next-day reminder.", len(stalledStatuses))
+	logCtx.WithField("stalled_statuses_count", len(stalledStatuses)).Info("Found status(es) needing a next-day reminder.")
 
 	for _, rs := range stalledStatuses {
-		s.logger.Printf("INFO: Processing next-day reminder for ReportStatusID: %d (TeacherID: %d, ReportKey: %s, CurrentStatus: %s)", rs.ID, rs.TeacherID, rs.ReportKey, rs.Status)
+		reminderLogCtx := logCtx.WithFields(logrus.Fields{
+			"report_status_id": rs.ID,
+			"teacher_id":       rs.TeacherID,
+			"cycle_id":         rs.CycleID,
+			"report_key":       rs.ReportKey,
+			"current_status":   rs.Status,
+		})
+		reminderLogCtx.Info("Processing next-day reminder")
 
 		teacherInfo, err := s.teacherRepo.GetByID(ctx, rs.TeacherID)
 		if err != nil {
-			s.logger.Printf("ERROR: Failed to get teacher (ID %d) for next-day reminder: %v", rs.TeacherID, err)
+			reminderLogCtx.WithError(err).Error("Failed to get teacher for next-day reminder")
 			continue // Skip this reminder
 		}
 
 		// Update status before sending to prevent re-processing if send fails temporarily
-		// but ensure we record the attempt.
-		// originalStatusBeforeReminder := rs.Status // For logging or conditional logic if needed
 		rs.Status = notification.StatusNextDayReminderSent
-		rs.ResponseAttempts++ // This is another attempt to get a response
-		// LastNotifiedAt will be set by sendSpecificReportQuestion or explicitly after send
-		rs.RemindAt = sql.NullTime{Valid: false} // Clear any previous reminder time
+		rs.ResponseAttempts++                    // Increment response attempts
+		rs.RemindAt = sql.NullTime{Valid: false} // Clear any existing reminder time
+		rs.UpdatedAt = time.Now()
 
 		// Re-send the specific question
 		if err := s.sendSpecificReportQuestion(ctx, teacherInfo, rs.CycleID, rs.ReportKey); err != nil {
-			s.logger.Printf("ERROR: Failed to send next-day reminder for ReportStatusID %d: %v", rs.ID, err)
+			reminderLogCtx.WithError(err).Error("Failed to send next-day reminder")
 			// If send fails, status is already NEXT_DAY_REMINDER_SENT in memory.
 			// We update the DB status to NEXT_DAY_REMINDER_SENT to record the attempt.
 			// LastNotifiedAt would not be updated by sendSpecificReportQuestion.
 			rs.Status = notification.StatusNextDayReminderSent // Ensure this is the final status for this attempt
 			if errUpdate := s.notifRepo.UpdateReportStatus(ctx, rs); errUpdate != nil {
-				s.logger.Printf("ERROR: Failed to update ReportStatusID %d after FAILED next-day reminder send attempt: %v", rs.ID, errUpdate)
+				reminderLogCtx.WithError(errUpdate).Error("Failed to update ReportStatusID after FAILED next-day reminder send attempt")
 			}
 
 		} else {
@@ -530,16 +584,16 @@ func (s *NotificationServiceImpl) ProcessNextDayReminders(ctx context.Context) e
 			// Fetch the latest version of rs as sendSpecificReportQuestion might have updated it (especially LastNotifiedAt).
 			updatedRs, fetchErr := s.notifRepo.GetReportStatusByID(ctx, rs.ID)
 			if fetchErr != nil {
-				s.logger.Printf("ERROR: Failed to re-fetch ReportStatusID %d after successful next-day reminder send: %v", rs.ID, fetchErr)
+				reminderLogCtx.WithError(fetchErr).Error("Failed to re-fetch ReportStatusID after successful next-day reminder send")
 				updatedRs = rs // Fallback to original rs, LastNotifiedAt might be stale from this rs instance.
 			}
 			updatedRs.Status = notification.StatusNextDayReminderSent // Final status for this path
 			updatedRs.ResponseAttempts = rs.ResponseAttempts          // Preserve incremented attempts from the in-memory rs
 
 			if errUpdate := s.notifRepo.UpdateReportStatus(ctx, updatedRs); errUpdate != nil {
-				s.logger.Printf("ERROR: Failed to update ReportStatusID %d after successful next-day reminder: %v", updatedRs.ID, errUpdate)
+				reminderLogCtx.WithError(errUpdate).Error("Failed to update ReportStatusID after successful next-day reminder")
 			} else {
-				s.logger.Printf("INFO: Successfully sent and updated status for next-day reminder for ReportStatusID: %d", updatedRs.ID)
+				reminderLogCtx.Info("Successfully sent and updated status for next-day reminder")
 			}
 		}
 	}

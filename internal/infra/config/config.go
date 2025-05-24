@@ -11,16 +11,16 @@ import (
 
 // AppConfig holds all configuration for the application
 type AppConfig struct {
-	TelegramToken         string
-	DatabaseURL           string
-	AdminTelegramID       int64
-	ManagerTelegramID     int64
-	LogLevel              string
-	Environment           string
-	CronSpec15th          string
-	CronSpecDaily         string // For the daily check for last day of month
-	CronSpecReminderCheck string // For checking 1-hour reminders
-	CronSpecNextDayCheck  string // For checking next-day reminders
+	TelegramToken                string
+	DatabaseURL                  string
+	AdminTelegramID              int64
+	ManagerTelegramID            int64
+	LogLevel                     string
+	Environment                  string
+	CronSpec15th                 string
+	CronSpecDailyCheckForLastDay string // For the daily check for last day of month
+	CronSpecReminderCheck        string // For checking 1-hour reminders
+	CronSpecNextDayCheck         string // For checking next-day reminders
 }
 
 // Load reads configuration from environment variables and .env file (if present).
@@ -74,9 +74,9 @@ func Load() (*AppConfig, error) {
 	if cfg.CronSpec15th == "" {
 		cfg.CronSpec15th = "0 10 15 * *" // Default: 10:00 AM on 15th
 	}
-	cfg.CronSpecDaily = os.Getenv("CRON_SPEC_DAILY_FOR_LAST_DAY_CHECK")
-	if cfg.CronSpecDaily == "" {
-		cfg.CronSpecDaily = "0 10 * * *" // Default: 10:00 AM daily
+	cfg.CronSpecDailyCheckForLastDay = os.Getenv("CRON_SPEC_DAILY_FOR_LAST_DAY_CHECK")
+	if cfg.CronSpecDailyCheckForLastDay == "" {
+		cfg.CronSpecDailyCheckForLastDay = "0 10 * * *" // Default: 10:00 AM daily
 	}
 
 	cfg.CronSpecReminderCheck = os.Getenv("CRON_SPEC_REMINDER_CHECK")
