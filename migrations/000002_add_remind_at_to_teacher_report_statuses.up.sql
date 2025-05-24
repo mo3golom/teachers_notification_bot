@@ -1,0 +1,2 @@
+ALTER TABLE teacher_report_statuses
+ADD COLUMN IF NOT EXISTS remind_at TIMESTAMPTZ DEFAULT NULL; 

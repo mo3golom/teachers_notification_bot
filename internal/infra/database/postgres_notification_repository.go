@@ -71,10 +71,10 @@ func (r *PostgresNotificationRepository) GetCycleByDateAndType(ctx context.Conte
 // --- TeacherReportStatus Methods ---
 
 func (r *PostgresNotificationRepository) CreateReportStatus(ctx context.Context, rs *notification.ReportStatus) error {
-	query := `INSERT INTO teacher_report_statuses (teacher_id, cycle_id, report_key, status, last_notified_at, response_attempts)
-               VALUES ($1, $2, $3, $4, $5, $6)
+	query := `INSERT INTO teacher_report_statuses (teacher_id, cycle_id, report_key, status, last_notified_at, response_attempts, remind_at)
+               VALUES ($1, $2, $3, $4, $5, $6, $7)
                RETURNING id, created_at, updated_at`
-	err := r.db.QueryRowContext(ctx, query, rs.TeacherID, rs.CycleID, rs.ReportKey, rs.Status, rs.LastNotifiedAt, rs.ResponseAttempts).Scan(&rs.ID, &rs.CreatedAt, &rs.UpdatedAt)
+	err := r.db.QueryRowContext(ctx, query, rs.TeacherID, rs.CycleID, rs.ReportKey, rs.Status, rs.LastNotifiedAt, rs.ResponseAttempts, rs.RemindAt).Scan(&rs.ID, &rs.CreatedAt, &rs.UpdatedAt)
 	if err != nil {
 		if strings.Contains(err.Error(), "teacher_cycle_report_unique") { // Check for unique constraint violation
 			return ErrDuplicateReportStatus
@@ -95,15 +95,15 @@ func (r *PostgresNotificationRepository) BulkCreateReportStatuses(ctx context.Co
 	}
 	defer txn.Rollback() // Rollback if not committed
 
-	stmt, err := txn.PrepareContext(ctx, `INSERT INTO teacher_report_statuses (teacher_id, cycle_id, report_key, status, last_notified_at, response_attempts, created_at, updated_at)
-                                         VALUES ($1, $2, $3, $4, $5, $6, NOW(), NOW())`)
+	stmt, err := txn.PrepareContext(ctx, `INSERT INTO teacher_report_statuses (teacher_id, cycle_id, report_key, status, last_notified_at, response_attempts, remind_at, created_at, updated_at)
+                                         VALUES ($1, $2, $3, $4, $5, $6, $7, NOW(), NOW())`)
 	if err != nil {
 		return fmt.Errorf("failed to prepare statement for bulk create: %w", err)
 	}
 	defer stmt.Close()
 
 	for _, rs := range statuses {
-		_, err := stmt.ExecContext(ctx, rs.TeacherID, rs.CycleID, rs.ReportKey, rs.Status, rs.LastNotifiedAt, rs.ResponseAttempts)
+		_, err := stmt.ExecContext(ctx, rs.TeacherID, rs.CycleID, rs.ReportKey, rs.Status, rs.LastNotifiedAt, rs.ResponseAttempts, rs.RemindAt)
 		if err != nil {
 			if strings.Contains(err.Error(), "teacher_cycle_report_unique") {
 				// Potentially log this or decide on overall failure/partial success
@@ -118,10 +118,10 @@ func (r *PostgresNotificationRepository) BulkCreateReportStatuses(ctx context.Co
 
 func (r *PostgresNotificationRepository) UpdateReportStatus(ctx context.Context, rs *notification.ReportStatus) error {
 	query := `UPDATE teacher_report_statuses
-               SET status = $1, last_notified_at = $2, response_attempts = $3, updated_at = NOW()
-               WHERE id = $4
+               SET status = $1, last_notified_at = $2, response_attempts = $3, updated_at = NOW(), remind_at = $4
+               WHERE id = $5
                RETURNING updated_at` // updated_at also set by trigger
-	err := r.db.QueryRowContext(ctx, query, rs.Status, rs.LastNotifiedAt, rs.ResponseAttempts, rs.ID).Scan(&rs.UpdatedAt)
+	err := r.db.QueryRowContext(ctx, query, rs.Status, rs.LastNotifiedAt, rs.ResponseAttempts, rs.RemindAt, rs.ID).Scan(&rs.UpdatedAt)
 	if err != nil {
 		if err == sql.ErrNoRows {
 			return ErrReportStatusNotFound
@@ -132,13 +132,13 @@ func (r *PostgresNotificationRepository) UpdateReportStatus(ctx context.Context,
 }
 
 func (r *PostgresNotificationRepository) GetReportStatus(ctx context.Context, teacherID int64, cycleID int32, reportKey notification.ReportKey) (*notification.ReportStatus, error) {
-	query := `SELECT id, teacher_id, cycle_id, report_key, status, last_notified_at, response_attempts, created_at, updated_at
+	query := `SELECT id, teacher_id, cycle_id, report_key, status, last_notified_at, response_attempts, created_at, updated_at, remind_at
                FROM teacher_report_statuses
                WHERE teacher_id = $1 AND cycle_id = $2 AND report_key = $3`
 	rs := notification.ReportStatus{}
 	err := r.db.QueryRowContext(ctx, query, teacherID, cycleID, reportKey).Scan(
 		&rs.ID, &rs.TeacherID, &rs.CycleID, &rs.ReportKey, &rs.Status,
-		&rs.LastNotifiedAt, &rs.ResponseAttempts, &rs.CreatedAt, &rs.UpdatedAt,
+		&rs.LastNotifiedAt, &rs.ResponseAttempts, &rs.CreatedAt, &rs.UpdatedAt, &rs.RemindAt,
 	)
 	if err != nil {
 		if err == sql.ErrNoRows {
@@ -150,12 +150,12 @@ func (r *PostgresNotificationRepository) GetReportStatus(ctx context.Context, te
 }
 
 func (r *PostgresNotificationRepository) GetReportStatusByID(ctx context.Context, id int64) (*notification.ReportStatus, error) {
-	query := `SELECT id, teacher_id, cycle_id, report_key, status, last_notified_at, response_attempts, created_at, updated_at
+	query := `SELECT id, teacher_id, cycle_id, report_key, status, last_notified_at, response_attempts, created_at, updated_at, remind_at
                FROM teacher_report_statuses WHERE id = $1`
 	rs := notification.ReportStatus{}
 	err := r.db.QueryRowContext(ctx, query, id).Scan(
 		&rs.ID, &rs.TeacherID, &rs.CycleID, &rs.ReportKey, &rs.Status,
-		&rs.LastNotifiedAt, &rs.ResponseAttempts, &rs.CreatedAt, &rs.UpdatedAt,
+		&rs.LastNotifiedAt, &rs.ResponseAttempts, &rs.CreatedAt, &rs.UpdatedAt, &rs.RemindAt,
 	)
 	if err != nil {
 		if err == sql.ErrNoRows {
@@ -173,7 +173,7 @@ func scanReportStatuses(rows *sql.Rows) ([]*notification.ReportStatus, error) {
 		rs := notification.ReportStatus{}
 		if err := rows.Scan(
 			&rs.ID, &rs.TeacherID, &rs.CycleID, &rs.ReportKey, &rs.Status,
-			&rs.LastNotifiedAt, &rs.ResponseAttempts, &rs.CreatedAt, &rs.UpdatedAt,
+			&rs.LastNotifiedAt, &rs.ResponseAttempts, &rs.CreatedAt, &rs.UpdatedAt, &rs.RemindAt,
 		); err != nil {
 			return nil, fmt.Errorf("error scanning report status row: %w", err)
 		}
@@ -186,9 +186,9 @@ func scanReportStatuses(rows *sql.Rows) ([]*notification.ReportStatus, error) {
 }
 
 func (r *PostgresNotificationRepository) ListReportStatusesByCycleAndTeacher(ctx context.Context, cycleID int32, teacherID int64) ([]*notification.ReportStatus, error) {
-	query := `SELECT id, teacher_id, cycle_id, report_key, status, last_notified_at, response_attempts, created_at, updated_at
-               FROM teacher_report_statuses
-               WHERE cycle_id = $1 AND teacher_id = $2 ORDER BY report_key` // Order for consistent processing
+	query := `SELECT id, teacher_id, cycle_id, report_key, status, last_notified_at, response_attempts, created_at, updated_at, remind_at
+                FROM teacher_report_statuses
+                WHERE cycle_id = $1 AND teacher_id = $2 ORDER BY report_key` // Order for consistent processing
 	rows, err := r.db.QueryContext(ctx, query, cycleID, teacherID)
 	if err != nil {
 		return nil, fmt.Errorf("error querying report statuses by cycle and teacher: %w", err)
@@ -198,9 +198,9 @@ func (r *PostgresNotificationRepository) ListReportStatusesByCycleAndTeacher(ctx
 }
 
 func (r *PostgresNotificationRepository) ListReportStatusesByCycle(ctx context.Context, cycleID int32) ([]*notification.ReportStatus, error) {
-	query := `SELECT id, teacher_id, cycle_id, report_key, status, last_notified_at, response_attempts, created_at, updated_at
-               FROM teacher_report_statuses
-               WHERE cycle_id = $1 ORDER BY teacher_id, report_key`
+	query := `SELECT id, teacher_id, cycle_id, report_key, status, last_notified_at, response_attempts, created_at, updated_at, remind_at
+                FROM teacher_report_statuses
+                WHERE cycle_id = $1 ORDER BY teacher_id, report_key`
 	rows, err := r.db.QueryContext(ctx, query, cycleID)
 	if err != nil {
 		return nil, fmt.Errorf("error querying report statuses by cycle: %w", err)
@@ -210,9 +210,9 @@ func (r *PostgresNotificationRepository) ListReportStatusesByCycle(ctx context.C
 }
 
 func (r *PostgresNotificationRepository) ListReportStatusesByStatusAndCycle(ctx context.Context, cycleID int32, status notification.InteractionStatus) ([]*notification.ReportStatus, error) {
-	query := `SELECT id, teacher_id, cycle_id, report_key, status, last_notified_at, response_attempts, created_at, updated_at
-               FROM teacher_report_statuses
-               WHERE cycle_id = $1 AND status = $2 ORDER BY teacher_id, report_key`
+	query := `SELECT id, teacher_id, cycle_id, report_key, status, last_notified_at, response_attempts, created_at, updated_at, remind_at
+                FROM teacher_report_statuses
+                WHERE cycle_id = $1 AND status = $2 ORDER BY teacher_id, report_key`
 	rows, err := r.db.QueryContext(ctx, query, cycleID, status)
 	if err != nil {
 		return nil, fmt.Errorf("error querying report statuses by status and cycle: %w", err)
@@ -222,10 +222,10 @@ func (r *PostgresNotificationRepository) ListReportStatusesByStatusAndCycle(ctx 
 }
 
 func (r *PostgresNotificationRepository) ListReportStatusesForReminders(ctx context.Context, cycleID int32, status notification.InteractionStatus, notifiedBefore time.Time) ([]*notification.ReportStatus, error) {
-	query := `SELECT id, teacher_id, cycle_id, report_key, status, last_notified_at, response_attempts, created_at, updated_at
-               FROM teacher_report_statuses
-               WHERE cycle_id = $1 AND status = $2 AND last_notified_at < $3 
-               ORDER BY last_notified_at ASC` // Process older ones first
+	query := `SELECT id, teacher_id, cycle_id, report_key, status, last_notified_at, response_attempts, created_at, updated_at, remind_at
+                FROM teacher_report_statuses
+                WHERE cycle_id = $1 AND status = $2 AND last_notified_at < $3
+                ORDER BY last_notified_at ASC` // Process older ones first
 	rows, err := r.db.QueryContext(ctx, query, cycleID, status, notifiedBefore)
 	if err != nil {
 		return nil, fmt.Errorf("error querying report statuses for reminders: %w", err)
@@ -259,4 +259,18 @@ func (r *PostgresNotificationRepository) AreAllReportsConfirmedForTeacher(ctx co
 	}
 
 	return unconfirmedCount == 0, nil
+}
+
+func (r *PostgresNotificationRepository) ListDueReminders(ctx context.Context, targetStatus notification.InteractionStatus, remindAtOrBefore time.Time) ([]*notification.ReportStatus, error) {
+	query := `SELECT id, teacher_id, cycle_id, report_key, status, last_notified_at, response_attempts, created_at, updated_at, remind_at
+			   FROM teacher_report_statuses
+			   WHERE status = $1 AND remind_at IS NOT NULL AND remind_at <= $2
+			   ORDER BY remind_at ASC` // Process older ones first
+	rows, err := r.db.QueryContext(ctx, query, targetStatus, remindAtOrBefore)
+	if err != nil {
+		return nil, fmt.Errorf("error querying for due reminders (status: %s): %w", targetStatus, err)
+	}
+	defer rows.Close()
+	// Use the scanReportStatuses helper, ensuring it handles the new remind_at field
+	return scanReportStatuses(rows)
 }

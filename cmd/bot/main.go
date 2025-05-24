@@ -97,6 +97,7 @@ func main() {
 		schedulerLogger,
 		cfg.CronSpec15th,
 		cfg.CronSpecDaily,
+		cfg.CronSpecReminderCheck,
 	)
 	notifScheduler.Start() // Start the cron jobs
 

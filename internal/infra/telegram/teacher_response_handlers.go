@@ -36,9 +36,25 @@ func RegisterTeacherResponseHandlers(ctx context.Context, b *telebot.Bot, notifi
 			return c.Respond(&telebot.CallbackResponse{Text: "Ответ 'Да' принят!"})
 
 		} else if strings.HasPrefix(data, "ans_no_") {
-			// Logic for "No" will be in Task B012
-			c.Bot().OnError(fmt.Errorf("received 'NO' callback, not yet implemented: %s", data), c)
-			return c.Respond(&telebot.CallbackResponse{Text: "Обработка ответа 'Нет' в разработке."})
+			parts := strings.Split(data, "_") // ans_no_123
+			if len(parts) != 3 {
+				c.Bot().OnError(fmt.Errorf("invalid callback data format for 'no': %s", data), c)
+				return c.Respond(&telebot.CallbackResponse{Text: "Ошибка обработки ответа."})
+			}
+			reportStatusIDStr := parts[2]
+			reportStatusID, err := strconv.ParseInt(reportStatusIDStr, 10, 64)
+			if err != nil {
+				c.Bot().OnError(fmt.Errorf("invalid reportStatusID '%s' in 'no' callback: %w", reportStatusIDStr, err), c)
+				return c.Respond(&telebot.CallbackResponse{Text: "Ошибка ID отчета."})
+			}
+			err = notificationService.ProcessTeacherNoResponse(ctx, reportStatusID)
+			if err != nil {
+				c.Bot().OnError(fmt.Errorf("error processing 'No' response for statusID %d: %w", reportStatusID, err), c)
+				return c.Respond(&telebot.CallbackResponse{Text: "Произошла ошибка."})
+			}
+			// The service sends the textual "Понял(а)..." message.
+			// Callback an ack to remove the "processing" state on the button.
+			return c.Respond() // Minimal ack, or use text "Напоминание установлено."
 		}
 
 		// Fallback for unhandled callbacks by this specific handler.

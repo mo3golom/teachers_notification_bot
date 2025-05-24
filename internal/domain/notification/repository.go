@@ -27,4 +27,6 @@ type Repository interface {
 	// AreAllReportsConfirmedForTeacher checks if a teacher has confirmed all required reports for a cycle.
 	// expectedReportKeys are the keys relevant for the given cycle type.
 	AreAllReportsConfirmedForTeacher(ctx context.Context, teacherID int64, cycleID int32, expectedReportKeys []ReportKey) (bool, error)
+	// ListDueReminders fetches report statuses that are due for a reminder.
+	ListDueReminders(ctx context.Context, targetStatus InteractionStatus, remindAtOrBefore time.Time) ([]*ReportStatus, error)
 }

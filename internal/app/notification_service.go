@@ -23,6 +23,8 @@ type NotificationService interface {
 	// create initial TeacherReportStatus entries, and send the first notifications.
 	InitiateNotificationProcess(ctx context.Context, cycleType notification.CycleType, cycleDate time.Time) error
 	ProcessTeacherYesResponse(ctx context.Context, reportStatusID int64) error
+	ProcessTeacherNoResponse(ctx context.Context, reportStatusID int64) error
+	ProcessScheduled1HourReminders(ctx context.Context) error
 }
 
 // NotificationServiceImpl implements the NotificationService interface.
@@ -350,5 +352,83 @@ func (s *NotificationServiceImpl) sendManagerConfirmationAndTeacherFinalReply(ct
 		return fmt.Errorf("failed to send final reply to teacher: %w", err)
 	}
 	s.logger.Printf("INFO: Final confirmation sent to teacher %s (TG_ID: %d).", teacherInfo.FirstName, teacherInfo.TelegramID)
+	return nil
+}
+
+func (s *NotificationServiceImpl) ProcessTeacherNoResponse(ctx context.Context, reportStatusID int64) error {
+	s.logger.Printf("INFO: Processing 'No' response for ReportStatusID: %d", reportStatusID)
+
+	// 1a. Fetch TeacherReportStatus
+	currentReportStatus, err := s.notifRepo.GetReportStatusByID(ctx, reportStatusID)
+	if err != nil {
+		if err == idb.ErrReportStatusNotFound {
+			s.logger.Printf("WARN: ReportStatusID %d not found. Possibly a stale callback.", reportStatusID)
+			return nil // Acknowledge callback, but nothing to process
+		}
+		s.logger.Printf("ERROR: Failed to get report status by ID %d: %v", reportStatusID, err)
+		return fmt.Errorf("failed to get report status by ID %d: %w", reportStatusID, err)
+	}
+
+	// If already answered 'No', to prevent reprocessing (e.g. double clicks)
+	if currentReportStatus.Status == notification.StatusAnsweredNo {
+		s.logger.Printf("INFO: ReportStatusID %d already marked as ANSWERED_NO. No action needed.", reportStatusID)
+		return nil
+	}
+
+	// 1b. Update Status
+	currentReportStatus.Status = notification.StatusAnsweredNo
+	currentReportStatus.UpdatedAt = time.Now() // Service layer can set this before repo call
+	if err := s.notifRepo.UpdateReportStatus(ctx, currentReportStatus); err != nil {
+		s.logger.Printf("ERROR: Failed to update report status ID %d to ANSWERED_NO: %v", reportStatusID, err)
+		return fmt.Errorf("failed to update report status ID %d: %w", reportStatusID, err)
+	}
+	s.logger.Printf("INFO: ReportStatusID %d updated to ANSWERED_NO.", reportStatusID)
+
+	// 1c. Fetch Teacher and Cycle details
+	teacherInfo, err := s.teacherRepo.GetByID(ctx, currentReportStatus.TeacherID)
+	if err != nil {
+		s.logger.Printf("ERROR: Failed to get teacher details for TeacherID %d: %v", currentReportStatus.TeacherID, err)
+		return fmt.Errorf("failed to get teacher %d: %w", currentReportStatus.TeacherID, err)
+	}
+
+	currentCycle, err := s.notifRepo.GetCycleByID(ctx, currentReportStatus.CycleID)
+	if err != nil {
+		s.logger.Printf("ERROR: Failed to get cycle details for CycleID %d: %v", currentReportStatus.CycleID, err)
+		return fmt.Errorf("failed to get cycle %d: %w", currentReportStatus.CycleID, err)
+	}
+
+	// 1d. Determine Next Action
+	allExpectedReportsForCycle := determineReportsForCycle(currentCycle.Type)
+
+	allConfirmed, err := s.notifRepo.AreAllReportsConfirmedForTeacher(ctx, teacherInfo.ID, currentCycle.ID, allExpectedReportsForCycle)
+	if err != nil {
+		s.logger.Printf("ERROR: Failed to check if all reports confirmed for TeacherID %d, CycleID %d: %v", teacherInfo.ID, currentCycle.ID, err)
+		return fmt.Errorf("failed to check all reports confirmed for teacher %d, cycle %d: %w", teacherInfo.ID, currentCycle.ID, err)
+	}
+
+	if allConfirmed {
+		s.logger.Printf("INFO: All reports confirmed for TeacherID %d in CycleID %d.", teacherInfo.ID, currentCycle.ID)
+		return s.sendManagerConfirmationAndTeacherFinalReply(ctx, teacherInfo, currentCycle)
+	} else {
+		// Determine next report to ask
+		nextReportKey, err := s.determineNextReportKey(ctx, teacherInfo.ID, currentCycle.ID, currentReportStatus.ReportKey, allExpectedReportsForCycle)
+		if err != nil {
+			s.logger.Printf("ERROR: Could not determine next report key for TeacherID %d, CycleID %d: %v", teacherInfo.ID, currentCycle.ID, err)
+			return err
+		}
+
+		if nextReportKey == "" { // Should be caught by allConfirmed, but as a safeguard
+			s.logger.Printf("WARN: All reports appeared confirmed, but determineNextReportKey found no next key for TeacherID %d, CycleID %d. Finalizing.", teacherInfo.ID, currentCycle.ID)
+			return s.sendManagerConfirmationAndTeacherFinalReply(ctx, teacherInfo, currentCycle)
+		}
+
+		s.logger.Printf("INFO: Next report for TeacherID %d in CycleID %d is %s.", teacherInfo.ID, currentCycle.ID, nextReportKey)
+		return s.sendSpecificReportQuestion(ctx, teacherInfo, currentCycle.ID, nextReportKey)
+	}
+}
+
+func (s *NotificationServiceImpl) ProcessScheduled1HourReminders(ctx context.Context) error {
+	s.logger.Println("INFO: Processing scheduled 1-hour reminders...")
+	// ... existing code ...
 	return nil
 }

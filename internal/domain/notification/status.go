@@ -17,6 +17,7 @@ type ReportStatus struct {
 	Status           InteractionStatus // e.g., PENDING_QUESTION, ANSWERED_YES
 	LastNotifiedAt   sql.NullTime      // When the last notification/reminder for this item was sent
 	ResponseAttempts int               // Number of reminders or "No" responses for this item
+	RemindAt         sql.NullTime      // When a reminder should be sent
 	CreatedAt        time.Time
 	UpdatedAt        time.Time
 }

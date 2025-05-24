@@ -12,12 +12,13 @@ import (
 )
 
 type NotificationScheduler struct {
-	cronEngine      *cron.Cron
-	notifService    app.NotificationService // Using the interface
-	notifRepo       notification.Repository
-	logger          *log.Logger
-	cronSpec15th    string
-	cronSpecLastDay string // This will run daily, logic inside checks if it's the last day
+	cronEngine            *cron.Cron
+	notifService          app.NotificationService // Using the interface
+	notifRepo             notification.Repository
+	logger                *log.Logger
+	cronSpec15th          string
+	cronSpecLastDay       string // This will run daily, logic inside checks if it's the last day
+	cronSpecReminderCheck string
 }
 
 func NewNotificationScheduler(
@@ -26,14 +27,16 @@ func NewNotificationScheduler(
 	logger *log.Logger,
 	cronSpec15th string, // e.g., "0 10 15 * *" (10:00 AM on 15th)
 	cronSpecDailyCheckForLastDay string, // e.g., "0 10 * * *" (10:00 AM daily)
+	cronSpecReminderCheck string, // e.g., "*/5 * * * *" (every 5 minutes)
 ) *NotificationScheduler {
 	return &NotificationScheduler{
-		cronEngine:      cron.New(cron.WithLocation(time.Local)), // Use server's local time for cron
-		notifService:    notifService,
-		notifRepo:       notifRepo,
-		logger:          logger,
-		cronSpec15th:    cronSpec15th,
-		cronSpecLastDay: cronSpecDailyCheckForLastDay,
+		cronEngine:            cron.New(cron.WithLocation(time.Local)), // Use server's local time for cron
+		notifService:          notifService,
+		notifRepo:             notifRepo,
+		logger:                logger,
+		cronSpec15th:          cronSpec15th,
+		cronSpecLastDay:       cronSpecDailyCheckForLastDay,
+		cronSpecReminderCheck: cronSpecReminderCheck,
 	}
 }
 
@@ -66,6 +69,19 @@ func (s *NotificationScheduler) Start() {
 	})
 	if err != nil {
 		s.logger.Fatalf("FATAL: Could not add last day of month cron job: %v", err)
+	}
+
+	// Job for processing 1-hour reminders
+	_, err = s.cronEngine.AddFunc(s.cronSpecReminderCheck, func() {
+		s.logger.Println("INFO: Cron job triggered for processing 1-hour reminders.")
+		ctx, cancel := context.WithTimeout(context.Background(), 1*time.Minute) // Context for the job
+		defer cancel()
+		if err := s.notifService.ProcessScheduled1HourReminders(ctx); err != nil {
+			s.logger.Printf("ERROR: Error during 1-hour reminder processing: %v", err)
+		}
+	})
+	if err != nil {
+		s.logger.Fatalf("FATAL: Could not add 1-hour reminder processing cron job: %v", err)
 	}
 
 	s.cronEngine.Start()
