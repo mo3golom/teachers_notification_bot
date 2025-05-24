@@ -19,6 +19,7 @@ func RegisterTeacherResponseHandlers(ctx context.Context, b *telebot.Bot, notifi
 			return c.Respond(&telebot.CallbackResponse{Text: "Ошибка: Некорректный запрос."})
 		}
 		data := callback.Data
+		data = strings.TrimSpace(data) // Trim leading/trailing whitespace
 
 		handlerLogger := baseLogger.WithFields(logrus.Fields{
 			"handler":       "teacher_response_callback",
@@ -71,7 +72,6 @@ func RegisterTeacherResponseHandlers(ctx context.Context, b *telebot.Bot, notifi
 			// The service sends the textual "Понял(а)..." message.
 			handlerLogger.Info("Successfully processed 'No' response")
 			return c.Respond(&telebot.CallbackResponse{Text: ""}) // Respond with empty text to dismiss loading, service sends the actual reply
-
 		}
 
 		// Fallback for unhandled callbacks by this specific handler.

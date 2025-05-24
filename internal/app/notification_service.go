@@ -369,7 +369,7 @@ func (s *NotificationServiceImpl) sendManagerConfirmationAndTeacherFinalReply(ct
 		}
 		managerMessage := fmt.Sprintf("Преподаватель %s подтвердил(а) все таблицы для цикла %s (%s).", teacherFullName, cycleInfo.Type, cycleInfo.CycleDate.Format("2006-01-02"))
 
-		err := s.telegramClient.SendMessage(s.managerTelegramID, managerMessage, nil)
+		err := s.telegramClient.SendMessage(s.managerTelegramID, managerMessage, &telebot.SendOptions{})
 		if err != nil {
 			managerLogCtx.WithError(err).Errorf("Failed to send confirmation to manager for teacher %s", teacherFullName)
 		} else {
@@ -380,7 +380,7 @@ func (s *NotificationServiceImpl) sendManagerConfirmationAndTeacherFinalReply(ct
 	}
 
 	teacherReplyMessage := "Спасибо! Все таблицы подтверждены."
-	err := s.telegramClient.SendMessage(teacherInfo.TelegramID, teacherReplyMessage, nil)
+	err := s.telegramClient.SendMessage(teacherInfo.TelegramID, teacherReplyMessage, &telebot.SendOptions{})
 	if err != nil {
 		logCtx.WithError(err).Errorf("Failed to send final confirmation to teacher %s", teacherInfo.FirstName)
 		return fmt.Errorf("failed to send final reply to teacher: %w", err)
@@ -432,7 +432,7 @@ func (s *NotificationServiceImpl) ProcessTeacherNoResponse(ctx context.Context, 
 	if err := s.notifRepo.UpdateReportStatus(ctx, currentReportStatus); err != nil {
 		logCtx.WithError(err).Error("Failed to update report status to AWAITING_REMINDER_1H")
 		// Attempt to inform teacher of the error
-		_ = s.telegramClient.SendMessage(teacherInfo.TelegramID, "Произошла ошибка при обработке вашего ответа. Пожалуйста, попробуйте позже или свяжитесь с администратором.", nil)
+		_ = s.telegramClient.SendMessage(teacherInfo.TelegramID, "Произошла ошибка при обработке вашего ответа. Пожалуйста, попробуйте позже или свяжитесь с администратором.", &telebot.SendOptions{})
 		return fmt.Errorf("failed to update report status ID %d to AWAITING_REMINDER_1H: %w", reportStatusID, err)
 	}
 	logCtx.WithField("remind_at", currentReportStatus.RemindAt.Time.Format(time.RFC3339)).Info("ReportStatusID updated to AWAITING_REMINDER_1H.")

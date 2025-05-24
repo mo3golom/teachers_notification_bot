@@ -10,3 +10,4 @@
 # Environment file
 .env
 patches
+.vscode

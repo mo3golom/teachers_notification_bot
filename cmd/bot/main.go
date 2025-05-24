@@ -118,7 +118,9 @@ func main() {
 	// Register Handlers
 	telegram.RegisterAdminHandlers(ctx, bot, adminService, cfg.AdminTelegramID, logger.Log.WithField("handler_group", "admin"))
 	telegram.RegisterTeacherResponseHandlers(ctx, bot, notificationService, logger.Log.WithField("handler_group", "teacher_response"))
-	logger.Log.Info("Command handlers registered.")
+	// Register general bot commands
+	telegram.RegisterBotCommands(ctx, bot, cfg, teacherRepo, logger.Log.WithField("handler_group", "general_bot_commands"))
+	logger.Log.Info("Admin, Teacher Response, and General Bot command handlers registered.")
 
 	logger.Log.Info("Application setup complete. Bot and Scheduler are starting...")
 
