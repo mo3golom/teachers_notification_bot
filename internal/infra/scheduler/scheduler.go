@@ -19,6 +19,7 @@ type NotificationScheduler struct {
 	cronSpec15th          string
 	cronSpecLastDay       string // This will run daily, logic inside checks if it's the last day
 	cronSpecReminderCheck string
+	cronSpecNextDayCheck  string
 }
 
 func NewNotificationScheduler(
@@ -28,6 +29,7 @@ func NewNotificationScheduler(
 	cronSpec15th string, // e.g., "0 10 15 * *" (10:00 AM on 15th)
 	cronSpecDailyCheckForLastDay string, // e.g., "0 10 * * *" (10:00 AM daily)
 	cronSpecReminderCheck string, // e.g., "*/5 * * * *" (every 5 minutes)
+	cronSpecNextDayCheck string, // e.g., "0 9 * * *" (9 AM daily)
 ) *NotificationScheduler {
 	return &NotificationScheduler{
 		cronEngine:            cron.New(cron.WithLocation(time.Local)), // Use server's local time for cron
@@ -37,6 +39,7 @@ func NewNotificationScheduler(
 		cronSpec15th:          cronSpec15th,
 		cronSpecLastDay:       cronSpecDailyCheckForLastDay,
 		cronSpecReminderCheck: cronSpecReminderCheck,
+		cronSpecNextDayCheck:  cronSpecNextDayCheck,
 	}
 }
 
@@ -82,6 +85,19 @@ func (s *NotificationScheduler) Start() {
 	})
 	if err != nil {
 		s.logger.Fatalf("FATAL: Could not add 1-hour reminder processing cron job: %v", err)
+	}
+
+	// Job for processing next-day reminders
+	_, err = s.cronEngine.AddFunc(s.cronSpecNextDayCheck, func() {
+		s.logger.Println("INFO: Cron job triggered for processing next-day reminders.")
+		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Minute) // Longer timeout for potentially more items
+		defer cancel()
+		if err := s.notifService.ProcessNextDayReminders(ctx); err != nil {
+			s.logger.Printf("ERROR: Error during next-day reminder processing: %v", err)
+		}
+	})
+	if err != nil {
+		s.logger.Fatalf("FATAL: Could not add next-day reminder processing cron job: %v", err)
 	}
 
 	s.cronEngine.Start()

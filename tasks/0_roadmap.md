@@ -15,9 +15,8 @@ sequenceDiagram
     DevTeam->>DevTeam: B010: Initial Notification Sending Logic (First Question) (completed)
     DevTeam->>DevTeam: B011: Handling Teacher's "Yes" Response (completed)
     DevTeam->>DevTeam: B012: Handling Teacher's "No" Response & 1-Hour Reminder (completed)
-    DevTeam->>DevTeam: B013: Next-Day Reminder Logic
+    DevTeam->>DevTeam: B013: Next-Day Reminder Logic (completed)
     DevTeam->>DevTeam: B014: New Cycle State Management Verification
     DevTeam->>DevTeam: B015: Structured Logging Implementation
     DevTeam->>DevTeam: B016: Implement /start and /help Commands
-    DevTeam->>DevTeam: BT001: Unit Tests for TeacherRepository
     deactivate DevTeam

@@ -20,6 +20,7 @@ type AppConfig struct {
 	CronSpec15th          string
 	CronSpecDaily         string // For the daily check for last day of month
 	CronSpecReminderCheck string // For checking 1-hour reminders
+	CronSpecNextDayCheck  string // For checking next-day reminders
 }
 
 // Load reads configuration from environment variables and .env file (if present).
@@ -81,6 +82,11 @@ func Load() (*AppConfig, error) {
 	cfg.CronSpecReminderCheck = os.Getenv("CRON_SPEC_REMINDER_CHECK")
 	if cfg.CronSpecReminderCheck == "" {
 		cfg.CronSpecReminderCheck = "*/5 * * * *" // Default: every 5 minutes
+	}
+
+	cfg.CronSpecNextDayCheck = os.Getenv("CRON_SPEC_NEXT_DAY_CHECK")
+	if cfg.CronSpecNextDayCheck == "" {
+		cfg.CronSpecNextDayCheck = "0 9 * * *" // Default: 9 AM daily
 	}
 
 	return cfg, nil

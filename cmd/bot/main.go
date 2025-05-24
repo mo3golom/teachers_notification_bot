@@ -98,6 +98,7 @@ func main() {
 		cfg.CronSpec15th,
 		cfg.CronSpecDaily,
 		cfg.CronSpecReminderCheck,
+		cfg.CronSpecNextDayCheck,
 	)
 	notifScheduler.Start() // Start the cron jobs
 

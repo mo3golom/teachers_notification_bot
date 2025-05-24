@@ -25,6 +25,7 @@ type NotificationService interface {
 	ProcessTeacherYesResponse(ctx context.Context, reportStatusID int64) error
 	ProcessTeacherNoResponse(ctx context.Context, reportStatusID int64) error
 	ProcessScheduled1HourReminders(ctx context.Context) error
+	ProcessNextDayReminders(ctx context.Context) error
 }
 
 // NotificationServiceImpl implements the NotificationService interface.
@@ -430,5 +431,86 @@ func (s *NotificationServiceImpl) ProcessTeacherNoResponse(ctx context.Context, 
 func (s *NotificationServiceImpl) ProcessScheduled1HourReminders(ctx context.Context) error {
 	s.logger.Println("INFO: Processing scheduled 1-hour reminders...")
 	// ... existing code ...
+	return nil
+}
+
+func (s *NotificationServiceImpl) ProcessNextDayReminders(ctx context.Context) error {
+	s.logger.Println("INFO: Processing scheduled next-day reminders...")
+
+	now := time.Now()
+	// Define "previous day" range precisely, considering server's local timezone for consistency with cron.
+	// Location should match the cron job's location.
+	loc := time.Local // Or a specific configured timezone
+	year, month, day := now.Date()
+	startOfToday := time.Date(year, month, day, 0, 0, 0, 0, loc)
+	endOfPreviousDay := startOfToday.Add(-1 * time.Nanosecond) // Yesterday 23:59:59.999...
+	startOfPreviousDay := startOfToday.AddDate(0, 0, -1)       // Yesterday 00:00:00
+
+	s.logger.Printf("INFO: Checking for stalled statuses between %s and %s", startOfPreviousDay.Format(time.RFC3339), endOfPreviousDay.Format(time.RFC3339))
+
+	statusesToConsider := []notification.InteractionStatus{
+		notification.StatusPendingQuestion,
+		notification.StatusAwaitingReminder1H,
+	}
+
+	stalledStatuses, err := s.notifRepo.ListStalledStatusesFromPreviousDay(ctx, statusesToConsider, startOfPreviousDay, endOfPreviousDay)
+	if err != nil {
+		s.logger.Printf("ERROR: Failed to list stalled statuses for next-day reminder: %v", err)
+		return fmt.Errorf("failed to list stalled statuses: %w", err)
+	}
+
+	if len(stalledStatuses) == 0 {
+		s.logger.Println("INFO: No statuses found needing a next-day reminder.")
+		return nil
+	}
+	s.logger.Printf("INFO: Found %d status(es) needing a next-day reminder.", len(stalledStatuses))
+
+	for _, rs := range stalledStatuses {
+		s.logger.Printf("INFO: Processing next-day reminder for ReportStatusID: %d (TeacherID: %d, ReportKey: %s, CurrentStatus: %s)", rs.ID, rs.TeacherID, rs.ReportKey, rs.Status)
+
+		teacherInfo, err := s.teacherRepo.GetByID(ctx, rs.TeacherID)
+		if err != nil {
+			s.logger.Printf("ERROR: Failed to get teacher (ID %d) for next-day reminder: %v", rs.TeacherID, err)
+			continue // Skip this reminder
+		}
+
+		// Update status before sending to prevent re-processing if send fails temporarily
+		// but ensure we record the attempt.
+		// originalStatusBeforeReminder := rs.Status // For logging or conditional logic if needed
+		rs.Status = notification.StatusNextDayReminderSent
+		rs.ResponseAttempts++ // This is another attempt to get a response
+		// LastNotifiedAt will be set by sendSpecificReportQuestion or explicitly after send
+		rs.RemindAt = sql.NullTime{Valid: false} // Clear any previous reminder time
+
+		// Re-send the specific question
+		if err := s.sendSpecificReportQuestion(ctx, teacherInfo, rs.CycleID, rs.ReportKey); err != nil {
+			s.logger.Printf("ERROR: Failed to send next-day reminder for ReportStatusID %d: %v", rs.ID, err)
+			// If send fails, status is already NEXT_DAY_REMINDER_SENT in memory.
+			// We update the DB status to NEXT_DAY_REMINDER_SENT to record the attempt.
+			// LastNotifiedAt would not be updated by sendSpecificReportQuestion.
+			rs.Status = notification.StatusNextDayReminderSent // Ensure this is the final status for this attempt
+			if errUpdate := s.notifRepo.UpdateReportStatus(ctx, rs); errUpdate != nil {
+				s.logger.Printf("ERROR: Failed to update ReportStatusID %d after FAILED next-day reminder send attempt: %v", rs.ID, errUpdate)
+			}
+
+		} else {
+			// sendSpecificReportQuestion on success would have updated rs.LastNotifiedAt (via its own UpdateReportStatus call for that status).
+			// Now, we ensure the status is NEXT_DAY_REMINDER_SENT.
+			// Fetch the latest version of rs as sendSpecificReportQuestion might have updated it (especially LastNotifiedAt).
+			updatedRs, fetchErr := s.notifRepo.GetReportStatusByID(ctx, rs.ID)
+			if fetchErr != nil {
+				s.logger.Printf("ERROR: Failed to re-fetch ReportStatusID %d after successful next-day reminder send: %v", rs.ID, fetchErr)
+				updatedRs = rs // Fallback to original rs, LastNotifiedAt might be stale from this rs instance.
+			}
+			updatedRs.Status = notification.StatusNextDayReminderSent // Final status for this path
+			updatedRs.ResponseAttempts = rs.ResponseAttempts          // Preserve incremented attempts from the in-memory rs
+
+			if errUpdate := s.notifRepo.UpdateReportStatus(ctx, updatedRs); errUpdate != nil {
+				s.logger.Printf("ERROR: Failed to update ReportStatusID %d after successful next-day reminder: %v", updatedRs.ID, errUpdate)
+			} else {
+				s.logger.Printf("INFO: Successfully sent and updated status for next-day reminder for ReportStatusID: %d", updatedRs.ID)
+			}
+		}
+	}
 	return nil
 }

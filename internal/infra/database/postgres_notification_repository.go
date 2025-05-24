@@ -274,3 +274,33 @@ func (r *PostgresNotificationRepository) ListDueReminders(ctx context.Context, t
 	// Use the scanReportStatuses helper, ensuring it handles the new remind_at field
 	return scanReportStatuses(rows)
 }
+
+func (r *PostgresNotificationRepository) ListStalledStatusesFromPreviousDay(
+	ctx context.Context,
+	statusesToConsider []notification.InteractionStatus,
+	startOfPreviousDay time.Time, // e.g., Yesterday 00:00:00
+	endOfPreviousDay time.Time, // e.g., Yesterday 23:59:59.999999
+) ([]*notification.ReportStatus, error) {
+	if len(statusesToConsider) == 0 {
+		return []*notification.ReportStatus{}, nil
+	}
+
+	// Convert InteractionStatus slice to string slice for pq.Array
+	statusStrings := make([]string, len(statusesToConsider))
+	for i, s := range statusesToConsider {
+		statusStrings[i] = string(s)
+	}
+
+	query := `SELECT id, teacher_id, cycle_id, report_key, status, last_notified_at, response_attempts, created_at, updated_at, remind_at
+			   FROM teacher_report_statuses
+			   WHERE last_notified_at >= $1 AND last_notified_at <= $2
+				 AND status = ANY($3::varchar[])
+			   ORDER BY last_notified_at ASC`
+
+	rows, err := r.db.QueryContext(ctx, query, startOfPreviousDay, endOfPreviousDay, pq.Array(statusStrings))
+	if err != nil {
+		return nil, fmt.Errorf("error querying for stalled statuses from previous day: %w", err)
+	}
+	defer rows.Close()
+	return scanReportStatuses(rows)
+}
