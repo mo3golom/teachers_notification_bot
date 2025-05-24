@@ -1,0 +1,36 @@
+version: '3.8'
+
+services:
+  app:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: teacher_bot_app
+    restart: unless-stopped
+    # Environment variables can be passed here or through an .env file
+    # env_file:
+    #   - .env
+    depends_on:
+      - db
+    # For development, you might want to mount volumes to reflect code changes:
+    # volumes:
+    #   - .:/app
+    # If your app needs to expose a port (e.g., for health checks later):
+    # ports:
+    #   - "8080:8080"
+
+  db:
+    image: postgres:15-alpine # Using a specific version is good practice
+    container_name: teacher_bot_db
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: your_db_user       # Replace with your desired user
+      POSTGRES_PASSWORD: your_db_password # Replace with your desired password
+      POSTGRES_DB: teacher_bot_dev    # Replace with your desired DB name
+    ports:
+      - "5432:5432" # Maps host port 5432 to container port 5432
+    volumes:
+      - postgres_data:/var/lib/postgresql/data/
+
+volumes:
+  postgres_data: # Persists database data across container restarts 
