@@ -363,74 +363,105 @@ func (s *NotificationServiceImpl) ProcessTeacherNoResponse(ctx context.Context, 
 	currentReportStatus, err := s.notifRepo.GetReportStatusByID(ctx, reportStatusID)
 	if err != nil {
 		if err == idb.ErrReportStatusNotFound {
-			s.logger.Printf("WARN: ReportStatusID %d not found. Possibly a stale callback.", reportStatusID)
+			s.logger.Printf("WARN: ReportStatusID %d not found processing 'No' response. Possibly a stale callback.", reportStatusID)
 			return nil // Acknowledge callback, but nothing to process
 		}
 		s.logger.Printf("ERROR: Failed to get report status by ID %d: %v", reportStatusID, err)
 		return fmt.Errorf("failed to get report status by ID %d: %w", reportStatusID, err)
 	}
 
-	// If already answered 'No', to prevent reprocessing (e.g. double clicks)
-	if currentReportStatus.Status == notification.StatusAnsweredNo {
-		s.logger.Printf("INFO: ReportStatusID %d already marked as ANSWERED_NO. No action needed.", reportStatusID)
+	// If already awaiting reminder (e.g. from a previous 'No' click), prevent reprocessing.
+	if currentReportStatus.Status == notification.StatusAwaitingReminder1H {
+		s.logger.Printf("INFO: ReportStatusID %d already in AWAITING_REMINDER_1H. Ignoring duplicate 'No' response.", reportStatusID)
 		return nil
 	}
 
-	// 1b. Update Status
-	currentReportStatus.Status = notification.StatusAnsweredNo
-	currentReportStatus.UpdatedAt = time.Now() // Service layer can set this before repo call
-	if err := s.notifRepo.UpdateReportStatus(ctx, currentReportStatus); err != nil {
-		s.logger.Printf("ERROR: Failed to update report status ID %d to ANSWERED_NO: %v", reportStatusID, err)
-		return fmt.Errorf("failed to update report status ID %d: %w", reportStatusID, err)
-	}
-	s.logger.Printf("INFO: ReportStatusID %d updated to ANSWERED_NO.", reportStatusID)
-
-	// 1c. Fetch Teacher and Cycle details
+	// Fetch Teacher details for sending confirmation message
 	teacherInfo, err := s.teacherRepo.GetByID(ctx, currentReportStatus.TeacherID)
 	if err != nil {
 		s.logger.Printf("ERROR: Failed to get teacher details for TeacherID %d: %v", currentReportStatus.TeacherID, err)
 		return fmt.Errorf("failed to get teacher %d: %w", currentReportStatus.TeacherID, err)
 	}
 
-	currentCycle, err := s.notifRepo.GetCycleByID(ctx, currentReportStatus.CycleID)
+	// Update Status to AwaitingReminder1H and set RemindAt
+	currentReportStatus.Status = notification.StatusAwaitingReminder1H
+	currentReportStatus.RemindAt = sql.NullTime{Time: time.Now().Add(1 * time.Hour), Valid: true}
+	currentReportStatus.ResponseAttempts++ // Increment attempts as "No" is a form of non-completion.
+	currentReportStatus.UpdatedAt = time.Now()
+
+	if err := s.notifRepo.UpdateReportStatus(ctx, currentReportStatus); err != nil {
+		s.logger.Printf("ERROR: Failed to update report status ID %d to AWAITING_REMINDER_1H: %v", reportStatusID, err)
+		// Attempt to inform teacher of the error
+		_ = s.telegramClient.SendMessage(teacherInfo.TelegramID, "Произошла ошибка при обработке вашего ответа. Пожалуйста, попробуйте позже или свяжитесь с администратором.", nil)
+		return fmt.Errorf("failed to update report status ID %d to AWAITING_REMINDER_1H: %w", reportStatusID, err)
+	}
+	s.logger.Printf("INFO: ReportStatusID %d updated to AWAITING_REMINDER_1H. Reminder set for %s.", reportStatusID, currentReportStatus.RemindAt.Time.Format(time.RFC3339))
+
+	// Send confirmation message to teacher
+	teacherMessage := "Понял(а). Напомню через час. Если заполните таблицу раньше, это сообщение можно будет проигнорировать."
+	err = s.telegramClient.SendMessage(teacherInfo.TelegramID, teacherMessage, nil)
 	if err != nil {
-		s.logger.Printf("ERROR: Failed to get cycle details for CycleID %d: %v", currentReportStatus.CycleID, err)
-		return fmt.Errorf("failed to get cycle %d: %w", currentReportStatus.CycleID, err)
+		s.logger.Printf("ERROR: Failed to send 'No' response confirmation to teacher %s (TG_ID: %d): %v", teacherInfo.FirstName, teacherInfo.TelegramID, err)
+		// Log error but do not return an error for the main operation, as status update was successful.
 	}
 
-	// 1d. Determine Next Action
-	allExpectedReportsForCycle := determineReportsForCycle(currentCycle.Type)
-
-	allConfirmed, err := s.notifRepo.AreAllReportsConfirmedForTeacher(ctx, teacherInfo.ID, currentCycle.ID, allExpectedReportsForCycle)
-	if err != nil {
-		s.logger.Printf("ERROR: Failed to check if all reports confirmed for TeacherID %d, CycleID %d: %v", teacherInfo.ID, currentCycle.ID, err)
-		return fmt.Errorf("failed to check all reports confirmed for teacher %d, cycle %d: %w", teacherInfo.ID, currentCycle.ID, err)
-	}
-
-	if allConfirmed {
-		s.logger.Printf("INFO: All reports confirmed for TeacherID %d in CycleID %d.", teacherInfo.ID, currentCycle.ID)
-		return s.sendManagerConfirmationAndTeacherFinalReply(ctx, teacherInfo, currentCycle)
-	} else {
-		// Determine next report to ask
-		nextReportKey, err := s.determineNextReportKey(ctx, teacherInfo.ID, currentCycle.ID, currentReportStatus.ReportKey, allExpectedReportsForCycle)
-		if err != nil {
-			s.logger.Printf("ERROR: Could not determine next report key for TeacherID %d, CycleID %d: %v", teacherInfo.ID, currentCycle.ID, err)
-			return err
-		}
-
-		if nextReportKey == "" { // Should be caught by allConfirmed, but as a safeguard
-			s.logger.Printf("WARN: All reports appeared confirmed, but determineNextReportKey found no next key for TeacherID %d, CycleID %d. Finalizing.", teacherInfo.ID, currentCycle.ID)
-			return s.sendManagerConfirmationAndTeacherFinalReply(ctx, teacherInfo, currentCycle)
-		}
-
-		s.logger.Printf("INFO: Next report for TeacherID %d in CycleID %d is %s.", teacherInfo.ID, currentCycle.ID, nextReportKey)
-		return s.sendSpecificReportQuestion(ctx, teacherInfo, currentCycle.ID, nextReportKey)
-	}
+	// A "No" response means the current report is not done. Do not proceed to the next question.
+	// The flow will be handled by ProcessScheduled1HourReminders.
+	return nil
 }
 
 func (s *NotificationServiceImpl) ProcessScheduled1HourReminders(ctx context.Context) error {
 	s.logger.Println("INFO: Processing scheduled 1-hour reminders...")
-	// ... existing code ...
+	now := time.Now()
+
+	dueStatuses, err := s.notifRepo.ListDueReminders(ctx, notification.StatusAwaitingReminder1H, now)
+	if err != nil {
+		s.logger.Printf("ERROR: Failed to list due 1-hour reminders: %v", err)
+		return fmt.Errorf("failed to list due 1-hour reminders: %w", err)
+	}
+
+	if len(dueStatuses) == 0 {
+		s.logger.Println("INFO: No 1-hour reminders due at this time.")
+		return nil
+	}
+	s.logger.Printf("INFO: Found %d status(es) needing a 1-hour reminder.", len(dueStatuses))
+
+	for _, rs := range dueStatuses {
+		s.logger.Printf("INFO: Processing 1-hour reminder for ReportStatusID: %d (TeacherID: %d, ReportKey: %s)", rs.ID, rs.TeacherID, rs.ReportKey)
+
+		teacherInfo, err := s.teacherRepo.GetByID(ctx, rs.TeacherID)
+		if err != nil {
+			s.logger.Printf("ERROR: Failed to get teacher (ID %d) for 1-hour reminder: %v", rs.TeacherID, err)
+			continue // Skip this reminder
+		}
+
+		// Re-send the specific question. This function also updates LastNotifiedAt and sets status to StatusPendingQuestion.
+		err = s.sendSpecificReportQuestion(ctx, teacherInfo, rs.CycleID, rs.ReportKey)
+		if err != nil {
+			s.logger.Printf("ERROR: Failed to send 1-hour reminder (re-ask question) for ReportStatusID %d: %v", rs.ID, err)
+			// If sendSpecificReportQuestion fails, the status in DB should still be AWAITING_REMINDER_1H
+			// and RemindAt should still be set, so it will be picked up next time.
+			continue
+		}
+
+		// If sendSpecificReportQuestion was successful, it already updated the status to PENDING_QUESTION and LastNotifiedAt.
+		// We now need to clear RemindAt for this status.
+		// Fetch the latest status again as sendSpecificReportQuestion modified it.
+		updatedRs, fetchErr := s.notifRepo.GetReportStatusByID(ctx, rs.ID)
+		if fetchErr != nil {
+			s.logger.Printf("ERROR: Failed to re-fetch ReportStatusID %d after sending 1-hour reminder: %v. RemindAt might not be cleared.", rs.ID, fetchErr)
+			continue
+		}
+
+		updatedRs.RemindAt = sql.NullTime{Valid: false} // Clear reminder time
+		// The status is already PENDING_QUESTION due to sendSpecificReportQuestion.
+		// We are just ensuring RemindAt is cleared.
+		if errUpdate := s.notifRepo.UpdateReportStatus(ctx, updatedRs); errUpdate != nil {
+			s.logger.Printf("ERROR: Failed to update ReportStatusID %d to clear RemindAt after 1-hour reminder: %v", updatedRs.ID, errUpdate)
+		} else {
+			s.logger.Printf("INFO: Successfully sent 1-hour reminder and updated status for ReportStatusID: %d. Status is now %s, RemindAt cleared.", updatedRs.ID, updatedRs.Status)
+		}
+	}
 	return nil
 }
 
